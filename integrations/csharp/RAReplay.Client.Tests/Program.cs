@@ -136,6 +136,9 @@ internal static class Program
                 BitConverter.ToUInt32(ready, 4) == 1u && ready.Skip(16).SequenceEqual(id), "RPVC layout");
             uint flags;
             Check(!channel.TryConsumeRestart(out flags), "Ready must not restart");
+            bool collisionRejected = false;
+            try { ReplayViewerChannel.Create(root, id); } catch (IOException) { collisionRejected = true; }
+            Check(collisionRejected && File.ReadAllBytes(channel.ChannelPath).SequenceEqual(ready), "Ready CreateNew cannot overwrite");
             byte[] invalid = (byte[])ready.Clone(); invalid[16] ^= 1;
             File.WriteAllBytes(channel.ChannelPath, invalid);
             Check(!channel.TryConsumeRestart(out flags), "wrong ID rejected");
@@ -144,6 +147,17 @@ internal static class Program
             Check(deleteRejected && File.Exists(channel.ChannelPath), "foreign ID not deleted");
             File.WriteAllBytes(channel.ChannelPath, new byte[31]);
             Check(!channel.TryConsumeRestart(out flags), "bad length rejected");
+            File.WriteAllBytes(channel.ChannelPath, new byte[33]);
+            Check(!channel.TryConsumeRestart(out flags), "trailing byte rejected");
+            invalid = (byte[])ready.Clone(); invalid[0] ^= 1;
+            File.WriteAllBytes(channel.ChannelPath, invalid);
+            Check(!channel.TryConsumeRestart(out flags), "wrong magic rejected");
+            invalid = (byte[])ready.Clone(); invalid[4] = 2;
+            File.WriteAllBytes(channel.ChannelPath, invalid);
+            Check(!channel.TryConsumeRestart(out flags), "unknown version rejected");
+            invalid = (byte[])ready.Clone(); invalid[8] = 2;
+            File.WriteAllBytes(channel.ChannelPath, invalid);
+            Check(!channel.TryConsumeRestart(out flags), "unknown action rejected");
             invalid = (byte[])ready.Clone(); invalid[8] = 1; invalid[12] = 2;
             File.WriteAllBytes(channel.ChannelPath, invalid);
             Check(!channel.TryConsumeRestart(out flags), "unknown flags rejected");
@@ -156,6 +170,10 @@ internal static class Program
 
         int starts = 0;
         System.Collections.Generic.Queue<Action> pending = new System.Collections.Generic.Queue<Action>();
+        HostReplayAdapter legacyHost = new HostReplayAdapter(() => { }, null, () => false);
+        legacyHost.OnReplaySelected(root, archivePath, exePath);
+        Check(Directory.GetFiles(root, "rareplay-viewer-*.bin").Length == 0, "missing UI dispatcher cannot advertise restart");
+        legacyHost.OnGameProcessExited();
         HostReplayAdapter host = new HostReplayAdapter(() => starts++, callback => pending.Enqueue(callback), () => false);
         host.OnReplaySelected(root, archivePath, exePath);
         host.OnGameProcessExited();
@@ -166,6 +184,7 @@ internal static class Program
             string.Concat(playRequest.RequestId.Select(value => value.ToString("x2"))) + ".bin");
         byte[] restartBytes = File.ReadAllBytes(control); restartBytes[8] = 1; restartBytes[12] = 1;
         File.WriteAllBytes(control, restartBytes);
+        string previousControl = control;
         host.OnGameProcessExited();
         Check(pending.Count == 1 && !File.Exists(marker) && !File.Exists(control) &&
             File.ReadAllBytes(iniPath).SequenceEqual(ini), "cleanup precedes queued restart");
@@ -175,6 +194,7 @@ internal static class Program
             string.Concat(playRequest.RequestId.Select(value => value.ToString("x2"))) + ".bin");
         Check(starts == 3 && BitConverter.ToUInt32(File.ReadAllBytes(control), 12) == 1,
             "UI restart creates new session and preserves shroud");
+        Check(control != previousControl, "restart isolates previous request nonce");
         restartBytes = File.ReadAllBytes(control); restartBytes[8] = 1;
         File.WriteAllBytes(control, restartBytes);
         using (FileStream occupiedIni = new FileStream(iniPath, FileMode.Open, FileAccess.Read, FileShare.None))
