@@ -83,6 +83,7 @@ struct PlaybackControls
     PlaybackStatus mStatus = PlaybackStatus::Playing;
     std::uint32_t mLastCompletedFrame = 0;
     bool mCanRestart = false;
+    bool mIsHalfShroudEnabled = false;
     std::string mRestartError;
 };
 
@@ -111,7 +112,7 @@ struct ReplayViewSnapshot
     std::vector<FpsSample> mRecordedFps;
 };
 
-enum class ViewerCommandKind { SetPlaybackSpeed, SetPaused, ExitPlayback, RestartPlayback };
+enum class ViewerCommandKind { SetPlaybackSpeed, SetPaused, ExitPlayback, RestartPlayback, SetHalfShroud };
 struct ViewerCommand
 {
     std::uint64_t mSessionId = 0;

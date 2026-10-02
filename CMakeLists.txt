@@ -83,6 +83,7 @@ target_link_libraries(ReplayStorage PUBLIC ReplayDomain PRIVATE bcrypt)
 
 add_library(ReplayGameApi STATIC
     src/assets/CameoPixels.cpp
+    src/assets/ShroudPixels.cpp
     src/assets/IconLoadCache.cpp
     src/game_api/GameApi.cpp
     src/game_api/ReplayWorldReader.cpp
@@ -90,6 +91,7 @@ add_library(ReplayGameApi STATIC
     src/game_api/PlayerInputEffects.cpp
     src/game_api/ViewerPlaybackSpeed.cpp
     src/game_api/native/NativeGame.cpp)
+target_sources(ReplayGameApi PRIVATE src/game_api/native/NativeShroud.cpp)
 target_include_directories(ReplayGameApi PRIVATE third_party/yrpp)
 target_compile_definitions(ReplayGameApi PRIVATE SYR_VER=2)
 target_link_libraries(ReplayGameApi PUBLIC ReplayDomain)
@@ -108,6 +110,7 @@ add_library(RAReplayPlugin SHARED
     src/hooks/MovementFeedbackHooks.cpp
     src/hooks/ReplayHooks.cpp
     src/hooks/ReplayPauseHooks.cpp
+    src/hooks/ReplayShroudHooks.cpp
     src/hooks/ReplayInputHooks.cpp
     src/hooks/ReplaySpeedHooks.cpp
     src/hooks/ViewerInputHooks.cpp
@@ -134,6 +137,8 @@ set_target_properties(SyringeHandshakeTests PROPERTIES
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(ShroudPixelsTests tests/ShroudPixelsTests.cpp src/assets/ShroudPixels.cpp)
+    add_test(NAME ShroudPixels COMMAND ShroudPixelsTests)
     add_executable(ViewerControlChannelTests tests/ViewerControlChannelTests.cpp)
     target_link_libraries(ViewerControlChannelTests PRIVATE ReplayStorage)
     add_test(NAME ViewerControlChannel COMMAND ViewerControlChannelTests "${CMAKE_SOURCE_DIR}/tests/fixtures")

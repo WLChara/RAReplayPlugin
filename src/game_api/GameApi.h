@@ -36,6 +36,8 @@ public:
     static void ProcessGameOver();
     static bool IsReplayExitRequested();
     static void UpdatePausedCamera();
+    void InvalidateViewerShroud();
+    void ClearViewerShroud() noexcept;
     /** 仅在已验证目标的 InitRandom 选种后、任一 RNG 初始化前的游戏线程调用；不要求世界就绪。 */
     static void RestoreRandomSeedForInitialization(std::uint32_t seed);
 

@@ -17,6 +17,7 @@ constexpr std::uintptr_t NATIVE_GAME_OVER = 0x48C8B0;
 constexpr std::uintptr_t NATIVE_DRAW_ON_TOP = 0x4F4480;
 // 原生 KeyboardProcess 将此槽当作四方向位，不能按 SDK 的 FileName 指针解释。
 constexpr std::uintptr_t VIEWER_SCROLL_KEYS = 0xABCE14;
+constexpr std::uintptr_t SHROUD_RESOURCE = 0x89E794;
 constexpr std::uintptr_t BEFORE_SIMULATION = 0x55DC99;
 constexpr std::uintptr_t EXECUTE_EVENTS = 0x64C380;
 constexpr std::uintptr_t FRAME_PARSER_CALL = 0x55DE40;

@@ -40,6 +40,8 @@ struct PreviewOptions
     bool mMissingData = false;
     bool mCapture = false;
     bool mHostSmoke = false;
+    rareplay::viewer::PlaybackStatus mPlaybackStatus = rareplay::viewer::PlaybackStatus::Playing;
+    bool mRestartError = false;
 };
 
 bool ParseInteger(const wchar_t* text, int& outValue)
@@ -118,6 +120,24 @@ bool ParseArguments(int argc, wchar_t** argv, PreviewOptions& options)
         {
             options.mHostSmoke = true;
         }
+        else if (argument == L"--playback-state")
+        {
+            if (++index >= argc)
+                return false;
+            const std::wstring state = argv[index];
+            if (state == L"playing")
+                options.mPlaybackStatus = rareplay::viewer::PlaybackStatus::Playing;
+            else if (state == L"paused")
+                options.mPlaybackStatus = rareplay::viewer::PlaybackStatus::Paused;
+            else if (state == L"ended")
+                options.mPlaybackStatus = rareplay::viewer::PlaybackStatus::Ended;
+            else
+                return false;
+        }
+        else if (argument == L"--restart-error")
+        {
+            options.mRestartError = true;
+        }
         else
         {
             return false;
@@ -129,7 +149,8 @@ bool ParseArguments(int argc, wchar_t** argv, PreviewOptions& options)
 void PrintUsage()
 {
     std::wcerr << L"用法：ReplayHudPreview [--capture <BMP路径>] [--width 1600] [--height 900] "
-                  L"[--panel production|units|groups] [--missing-data] [--host-smoke（需截图模式）]\n";
+                  L"[--panel production|units|groups] [--missing-data] [--host-smoke（需截图模式）] "
+                  L"[--playback-state playing|paused|ended] [--restart-error]\n";
 }
 
 class PreviewApp final
@@ -150,6 +171,9 @@ public:
 
         const rareplay::tools::ReplayHudDemoOptions demoOptions{mOptions.mPanel, mOptions.mMissingData};
         mSnapshot = rareplay::tools::CreateReplayHudDemoSnapshot(demoOptions);
+        mSnapshot->mPlaybackControls.mStatus = mOptions.mPlaybackStatus;
+        if (mOptions.mRestartError)
+            mSnapshot->mPlaybackControls.mRestartError = "无法重新播放：启动器通知写入失败，当前回放已保留";
         mExchange.Publish(mSnapshot);
         mHud.SetIconResolver([this](const std::shared_ptr<const rareplay::viewer::IconImage>& image) {
             return ResolveIcon(image);

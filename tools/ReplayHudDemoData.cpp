@@ -136,6 +136,9 @@ std::shared_ptr<viewer::ReplayViewSnapshot> CreateReplayHudDemoSnapshot(const Re
     snapshot->mStartedUtc = 1'767'226'800;
     snapshot->mWasNetworkGame = true;
     snapshot->mFrameNumber = 28'540;
+    snapshot->mPlaybackControls.mLastCompletedFrame = snapshot->mFrameNumber;
+    snapshot->mPlaybackControls.mCanRestart = true;
+    snapshot->mPlaybackControls.mIsHalfShroudEnabled = true;
     snapshot->mTotalFrames = 64'800;
     snapshot->mRecordedLocalHouseIndex = 1;
     snapshot->mPlaybackSpeedSetting = 1;

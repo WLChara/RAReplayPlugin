@@ -12,6 +12,7 @@ void OnFrameBegin() noexcept;
 enum class ViewerLoopAction { Continue, Hold, Exit };
 ViewerLoopAction OnViewerLoopGate() noexcept;
 bool OnAfterFrameLoop() noexcept;
+bool ShouldUseHalfShroud() noexcept;
 void OnBeforeSimulation() noexcept;
 bool ShouldCapturePlayerInputEffect() noexcept;
 void OnPlayerInputEffectCaptured(const replay::RecordedInputEffect& effect) noexcept;

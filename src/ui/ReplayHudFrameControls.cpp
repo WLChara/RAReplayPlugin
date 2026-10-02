@@ -83,10 +83,15 @@ void DrawFrameControls(const viewer::ReplayViewSnapshot& snapshot, viewer::Repla
     {
         ImGui::TextDisabled("速度 %s · 不可调", currentLabel);
     }
-    if (ImGui::GetContentRegionAvail().x > 85.0f)
+    if (!compact && ImGui::GetContentRegionAvail().x > 85.0f)
     {
         ImGui::SameLine();
         ImGui::TextDisabled("F10 隐藏");
     }
+    bool halfShroud = snapshot.mPlaybackControls.mIsHalfShroudEnabled;
+    ImGui::BeginDisabled(!snapshot.mActive);
+    if (ImGui::Checkbox("半透明黑幕（50%）", &halfShroud))
+        exchange.Submit({snapshot.mSessionId, viewer::ViewerCommandKind::SetHalfShroud, halfShroud ? 1 : 0});
+    ImGui::EndDisabled();
 }
 }

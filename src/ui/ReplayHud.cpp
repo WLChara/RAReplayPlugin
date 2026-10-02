@@ -15,7 +15,7 @@ constexpr float EDGE_GAP = 14.0f;
 constexpr float PANEL_WIDTH = 324.0f;
 constexpr float FPS_WIDTH = 258.0f;
 constexpr float FPS_HEIGHT = 180.0f;
-constexpr float FOOTER_HEIGHT = 76.0f;
+constexpr float FOOTER_HEIGHT = 106.0f;
 
 void RecordWindowRegion(std::vector<UiRect>& regions)
 {
@@ -101,7 +101,7 @@ void ReplayHud::Draw(const viewer::ReplayViewSnapshot& snapshot, viewer::ReplayV
     }
 
     PushHudStyle();
-    const float footerHeight = snapshot.mPlaybackControls.mRestartError.empty() ? FOOTER_HEIGHT : 110.0f;
+    const float footerHeight = snapshot.mPlaybackControls.mRestartError.empty() ? FOOTER_HEIGHT : 144.0f;
     const ImGuiWindowFlags fixedFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
 

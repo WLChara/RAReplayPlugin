@@ -31,6 +31,13 @@ public:
 
     bool IsPlayback() const { return mRequest.mMode == ReplayMode::Play; }
     bool IsStarted() const { return mIsStarted; }
+    bool ShouldUseHalfShroud() const
+    {
+        const auto state = mSession.GetState();
+        return mIsStarted && IsPlayback() && mIsHalfShroudEnabled && !mHasExitRequested &&
+            (state == replay::ReplayState::Playing || state == replay::ReplayState::Paused ||
+                state == replay::ReplayState::Ended);
+    }
     bool IsRecordingActive() const
     {
         return mIsStarted && mRequest.mMode == ReplayMode::Record &&
@@ -192,6 +199,7 @@ public:
         if (IsPlayback())
             mOverlayDiagnostics.Report(true);
         mViewPublisher.End();
+        mGame.ClearViewerShroud();
         if (mIsStarted && mSession.GetState() == replay::ReplayState::Recording)
         {
             const bool success = mSession.Finish();
@@ -207,6 +215,7 @@ public:
     void FailUnexpected()
     {
         mViewPublisher.End();
+        mGame.ClearViewerShroud();
         mSession.Stop();
         if (IsPlayback())
             mGame.EndReplay();
@@ -230,10 +239,20 @@ private:
                     mSession.SetPaused(command.mValue != 0);
                 else if (command.mKind == viewer::ViewerCommandKind::RestartPlayback && !mHasExitRequested)
                 {
-                    if (mViewerChannel.RequestRestart(mViewerChannel.GetInitialFlags(), mRestartError))
+                    const auto flags = mIsHalfShroudEnabled ? storage::VIEWER_SHROUD_HALF : 0;
+                    if (mViewerChannel.RequestRestart(flags, mRestartError))
                     {
                         mHasExitRequested = true;
                         mGame.EndReplay();
+                    }
+                }
+                else if (command.mKind == viewer::ViewerCommandKind::SetHalfShroud && !mHasExitRequested)
+                {
+                    const bool enabled = command.mValue != 0;
+                    if (enabled != mIsHalfShroudEnabled)
+                    {
+                        mIsHalfShroudEnabled = enabled;
+                        mGame.InvalidateViewerShroud();
                     }
                 }
                 else if (command.mKind == viewer::ViewerCommandKind::ExitPlayback && !mHasExitRequested)
@@ -265,6 +284,7 @@ private:
             controls.mLastCompletedFrame = mSession.GetLastCompletedFrame();
             controls.mCanRestart = mViewerChannel.CanRestart();
             controls.mRestartError = mRestartError;
+            controls.mIsHalfShroudEnabled = mIsHalfShroudEnabled;
             mViewPublisher.Publish(override, mGame.CanControlViewerPlaybackSpeed(), controls);
         }
         catch (...)
@@ -302,6 +322,9 @@ private:
         if (IsPlayback())
         {
             mViewerChannel.Initialize();
+            mIsHalfShroudEnabled = (mViewerChannel.GetInitialFlags() & storage::VIEWER_SHROUD_HALF) != 0;
+            if (mIsHalfShroudEnabled)
+                mGame.InvalidateViewerShroud();
             Log("Replay viewer command filtering active; native map input remains available");
             try
             {
@@ -317,6 +340,7 @@ private:
     bool Fail(const std::string& error)
     {
         mViewPublisher.End();
+        mGame.ClearViewerShroud();
         if (!mIsStarted)
             mHasStartFailed = true;
         if (!mHasLoggedFailure)
@@ -353,6 +377,7 @@ private:
     bool mHasStartFailed = false;
     bool mHasLoggedFailure = false;
     bool mHasExitRequested = false;
+    bool mIsHalfShroudEnabled = false;
 };
 
 std::unique_ptr<ReplayRuntime> g_Runtime;
@@ -437,6 +462,11 @@ bool OnAfterFrameLoop() noexcept
 {
     try { return g_Runtime && g_Runtime->AfterFrameLoop(); }
     catch (...) { OnHookFailure(); return true; }
+}
+
+bool ShouldUseHalfShroud() noexcept
+{
+    return g_Runtime && g_Runtime->ShouldUseHalfShroud();
 }
 
 bool ShouldCapturePlayerInputEffect() noexcept

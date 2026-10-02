@@ -1,6 +1,7 @@
 #include "GameApi.h"
 
 #include "native/NativeGame.h"
+#include "native/NativeShroud.h"
 
 // 此版 YRpp 的 ProdFailType 仍使用 Win32 的小写 byte 基类型。
 using byte = unsigned char;
@@ -275,6 +276,8 @@ void GameApi::DrawViewerOnTop() { native::DrawViewerOnTop(); }
 void GameApi::ProcessGameOver() { native::ProcessGameOver(); }
 bool GameApi::IsReplayExitRequested() { return native::IsReplayExitRequested(); }
 void GameApi::UpdatePausedCamera() { native::UpdatePausedCamera(); }
+void GameApi::InvalidateViewerShroud() { native::InvalidateViewerShroud(); }
+void GameApi::ClearViewerShroud() noexcept { native::ClearViewerShroud(); }
 
 void GameApi::RestoreRandomSeedForInitialization(std::uint32_t seed)
 {
