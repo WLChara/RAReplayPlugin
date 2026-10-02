@@ -85,11 +85,45 @@ public:
         if (!mIsStarted && !Start())
             return;
         ConsumeViewerCommands();
-        const auto previousState = mSession.GetState();
+        if (mHasExitRequested)
+            return;
         ReportFailure(mSession.OnFrameBegin());
-        if (previousState == replay::ReplayState::Playing &&
-            mSession.GetState() == replay::ReplayState::Finished)
-            Log("Replay playback reached EOF");
+    }
+
+    ViewerLoopAction ViewerLoopGate()
+    {
+        if (!IsPlayback())
+            return ViewerLoopAction::Continue;
+        if (mIsStarted)
+            ConsumeViewerCommands();
+        if (mHasExitRequested || mSession.GetState() == replay::ReplayState::Failed ||
+            mGame.IsReplayExitRequested())
+            return ViewerLoopAction::Exit;
+        if (!mSession.IsPlaybackHeld())
+        {
+            // 继续命令也可能在本轮输入后到达；在进入模拟前补齐同一个未执行帧。
+            if (mIsStarted)
+                ReportFailure(mSession.OnFrameBegin());
+            if (mSession.GetState() == replay::ReplayState::Failed)
+                return ViewerLoopAction::Exit;
+            if (mSession.IsPlaybackHeld())
+                return ViewerLoopAction::Hold;
+            return ViewerLoopAction::Continue;
+        }
+        mGame.DiscardLocalCommands();
+        mGame.UpdatePausedCamera();
+        UpdateViewer();
+        return ViewerLoopAction::Hold;
+    }
+
+    bool AfterFrameLoop()
+    {
+        if (!mIsStarted || !IsPlayback())
+            return false;
+        ReportFailure(mSession.OnAfterFrameLoop());
+        UpdateViewer();
+        return mSession.IsPlaybackHeld() || mHasExitRequested ||
+            mSession.GetState() == replay::ReplayState::Failed;
     }
 
     void BeforeNativeEvents()
@@ -126,7 +160,7 @@ public:
 
     void CompleteFrame()
     {
-        if (mIsStarted && mRequest.mMode == ReplayMode::Record)
+        if (mIsStarted)
             ReportFailure(mSession.OnFrameEnd());
         if (mIsStarted && IsPlayback() && mSession.GetState() == replay::ReplayState::Playing)
             UpdateViewer();
@@ -185,9 +219,17 @@ private:
         {
             for (const auto& command : viewer::GetReplayViewExchange().Drain())
             {
-                if (command.mSessionId == mViewPublisher.GetSessionId() &&
-                    command.mKind == viewer::ViewerCommandKind::SetPlaybackSpeed)
+                if (command.mSessionId != mViewPublisher.GetSessionId())
+                    continue;
+                if (command.mKind == viewer::ViewerCommandKind::SetPlaybackSpeed)
                     TrySetPlaybackViewingSpeed(command.mValue);
+                else if (command.mKind == viewer::ViewerCommandKind::SetPaused)
+                    mSession.SetPaused(command.mValue != 0);
+                else if (command.mKind == viewer::ViewerCommandKind::ExitPlayback && !mHasExitRequested)
+                {
+                    mHasExitRequested = true;
+                    mGame.EndReplay();
+                }
             }
         }
         catch (...) { Log("Replay HUD command was ignored after an exception"); }
@@ -205,7 +247,12 @@ private:
             int speed = 0;
             const std::optional<int> override = mGame.TryGetViewerPlaybackSpeed(speed)
                 ? std::optional<int>(speed) : std::nullopt;
-            mViewPublisher.Publish(override, mGame.CanControlViewerPlaybackSpeed());
+            viewer::PlaybackControls controls;
+            controls.mStatus = mSession.GetState() == replay::ReplayState::Ended
+                ? viewer::PlaybackStatus::Ended : mSession.IsPlaybackHeld()
+                    ? viewer::PlaybackStatus::Paused : viewer::PlaybackStatus::Playing;
+            controls.mLastCompletedFrame = mSession.GetLastCompletedFrame();
+            mViewPublisher.Publish(override, mGame.CanControlViewerPlaybackSpeed(), controls);
         }
         catch (...)
         {
@@ -289,6 +336,7 @@ private:
     bool mIsPlaybackSourceOpen = false;
     bool mHasStartFailed = false;
     bool mHasLoggedFailure = false;
+    bool mHasExitRequested = false;
 };
 
 std::unique_ptr<ReplayRuntime> g_Runtime;
@@ -361,6 +409,18 @@ void OnBeforeSimulation() noexcept
 {
     try { if (g_Runtime) g_Runtime->BeforeSimulation(); }
     catch (...) { OnHookFailure(); }
+}
+
+ViewerLoopAction OnViewerLoopGate() noexcept
+{
+    try { return g_Runtime ? g_Runtime->ViewerLoopGate() : ViewerLoopAction::Continue; }
+    catch (...) { OnHookFailure(); return ViewerLoopAction::Exit; }
+}
+
+bool OnAfterFrameLoop() noexcept
+{
+    try { return g_Runtime && g_Runtime->AfterFrameLoop(); }
+    catch (...) { OnHookFailure(); return true; }
 }
 
 bool ShouldCapturePlayerInputEffect() noexcept

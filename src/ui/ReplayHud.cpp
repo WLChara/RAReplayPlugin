@@ -15,7 +15,7 @@ constexpr float EDGE_GAP = 14.0f;
 constexpr float PANEL_WIDTH = 324.0f;
 constexpr float FPS_WIDTH = 258.0f;
 constexpr float FPS_HEIGHT = 180.0f;
-constexpr float FOOTER_HEIGHT = 48.0f;
+constexpr float FOOTER_HEIGHT = 76.0f;
 
 void RecordWindowRegion(std::vector<UiRect>& regions)
 {

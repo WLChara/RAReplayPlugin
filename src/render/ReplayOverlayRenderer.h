@@ -51,6 +51,7 @@ private:
     std::uint64_t mSessionId = 0;
     bool mBackendInitialized = false;
     bool mVisible = true;
+    bool mHasShownEnded = false;
     std::atomic<bool> mDisabled{false};
 };
 

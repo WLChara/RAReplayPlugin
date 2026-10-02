@@ -233,6 +233,12 @@ bool D3D9OverlayRenderer::Render(IDirect3DDevice9* device,
             mIcons.Clear();
             mHud.Reset();
             mVisible = true;
+            mHasShownEnded = false;
+        }
+        if (snapshot->mPlaybackControls.mStatus == viewer::PlaybackStatus::Ended && !mHasShownEnded)
+        {
+            mVisible = true;
+            mHasShownEnded = true;
         }
         ProcessOverlayInput(mInputQueue, target.mWindow, true, mVisible);
         if (!mVisible)

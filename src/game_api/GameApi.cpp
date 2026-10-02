@@ -271,6 +271,11 @@ bool GameApi::InvokeNativePreworldWait()
     return native::WaitForPeers();
 }
 
+void GameApi::DrawViewerOnTop() { native::DrawViewerOnTop(); }
+void GameApi::ProcessGameOver() { native::ProcessGameOver(); }
+bool GameApi::IsReplayExitRequested() { return native::IsReplayExitRequested(); }
+void GameApi::UpdatePausedCamera() { native::UpdatePausedCamera(); }
+
 void GameApi::RestoreRandomSeedForInitialization(std::uint32_t seed)
 {
     Game::Seed = std::bit_cast<std::int32_t>(seed);

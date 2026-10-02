@@ -15,7 +15,8 @@ class ReplayViewPublisher final
 {
 public:
     void Begin(std::string replayName, int recordedLocalHouseIndex);
-    void Publish(std::optional<int> playbackSpeedSetting, bool canChangeSpeed);
+    void Publish(std::optional<int> playbackSpeedSetting, bool canChangeSpeed,
+        const viewer::PlaybackControls& controls);
     void End();
     std::uint64_t GetSessionId() const noexcept { return mSessionId; }
 

@@ -105,6 +105,7 @@ target_link_libraries(ReplayHudD3D9Smoke PRIVATE ReplayGraphicsHooks d3d9)
 add_library(RAReplayPlugin SHARED
     src/hooks/MovementFeedbackHooks.cpp
     src/hooks/ReplayHooks.cpp
+    src/hooks/ReplayPauseHooks.cpp
     src/hooks/ReplayInputHooks.cpp
     src/hooks/ReplaySpeedHooks.cpp
     src/hooks/ViewerInputHooks.cpp

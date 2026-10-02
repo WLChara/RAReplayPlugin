@@ -238,6 +238,12 @@ bool ReplayOverlayRenderer::Render(HDC drawDc, viewer::ReplayViewExchange& excha
             mIcons.Clear();
             mHud.Reset();
             mVisible = true;
+            mHasShownEnded = false;
+        }
+        if (snapshot->mPlaybackControls.mStatus == viewer::PlaybackStatus::Ended && !mHasShownEnded)
+        {
+            mVisible = true;
+            mHasShownEnded = true;
         }
         ProcessInput(window, true);
         if (!mVisible)

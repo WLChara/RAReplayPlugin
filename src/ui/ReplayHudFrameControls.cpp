@@ -14,6 +14,21 @@ void DrawFrameControls(const viewer::ReplayViewSnapshot& snapshot, viewer::Repla
     const float availableWidth = ImGui::GetContentRegionAvail().x;
     const bool compact = availableWidth < 730.0f;
 
+    const auto status = snapshot.mPlaybackControls.mStatus;
+    ImGui::BeginDisabled(status == viewer::PlaybackStatus::Ended || !snapshot.mActive);
+    if (ImGui::Button(status == viewer::PlaybackStatus::Playing ? "暂停" : "继续"))
+        exchange.Submit({snapshot.mSessionId, viewer::ViewerCommandKind::SetPaused,
+            status == viewer::PlaybackStatus::Playing ? 1 : 0});
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("退出回放"))
+        exchange.Submit({snapshot.mSessionId, viewer::ViewerCommandKind::ExitPlayback, 0});
+    if (status == viewer::PlaybackStatus::Ended)
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled("回放结束");
+    }
+
     if (snapshot.mTotalFrames && *snapshot.mTotalFrames > 0)
     {
         const float progress = std::clamp(static_cast<float>(snapshot.mFrameNumber) /

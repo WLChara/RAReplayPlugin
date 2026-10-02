@@ -77,6 +77,13 @@ struct NativeUiLayout
     int mSidebarContentTop = 0;
 };
 
+enum class PlaybackStatus { Playing, Paused, Ended };
+struct PlaybackControls
+{
+    PlaybackStatus mStatus = PlaybackStatus::Playing;
+    std::uint32_t mLastCompletedFrame = 0;
+};
+
 /** 游戏线程发布的只读值快照；缺失数据用 optional/能力标志表示，不能当作零。 */
 struct ReplayViewSnapshot
 {
@@ -93,6 +100,7 @@ struct ReplayViewSnapshot
     int mRecordedLocalHouseIndex = -1;
     int mPlaybackSpeedSetting = 0;
     bool mCanChangePlaybackSpeed = false;
+    PlaybackControls mPlaybackControls;
     bool mHasPlayerVision = false;
     bool mHasRecordedGroups = false;
     std::optional<NativeUiLayout> mNativeUiLayout;
@@ -101,7 +109,7 @@ struct ReplayViewSnapshot
     std::vector<FpsSample> mRecordedFps;
 };
 
-enum class ViewerCommandKind { SetPlaybackSpeed };
+enum class ViewerCommandKind { SetPlaybackSpeed, SetPaused, ExitPlayback };
 struct ViewerCommand
 {
     std::uint64_t mSessionId = 0;

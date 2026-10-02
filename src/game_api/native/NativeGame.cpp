@@ -6,6 +6,9 @@ using byte = unsigned char;
 
 #include <objidl.h>
 #include <Unsorted.h>
+#include <MouseClass.h>
+#include <InputManagerClass.h>
+#include <algorithm>
 
 #include <cstdint>
 
@@ -56,5 +59,41 @@ void RequestReplayExit()
 void RequestViewerOptionsMenu()
 {
     *reinterpret_cast<volatile int*>(target::OPTIONS_REQUEST) = 1;
+}
+
+void DrawViewerOnTop()
+{
+    reinterpret_cast<void(__thiscall*)(MouseClass*)>(target::NATIVE_DRAW_ON_TOP)(
+        &MouseClass::Instance);
+}
+
+void ProcessGameOver()
+{
+    reinterpret_cast<void(__cdecl*)()>(target::NATIVE_GAME_OVER)();
+}
+
+bool IsReplayExitRequested()
+{
+    return *reinterpret_cast<const volatile std::uint8_t*>(target::EXIT_REQUEST) != 0;
+}
+
+void UpdatePausedCamera()
+{
+    // KeyboardProcess 已维护四方向位；这里只复用 flags=1 的显示滚动，不运行 Logic。
+    const auto keys = *reinterpret_cast<const std::uint32_t*>(target::VIEWER_SCROLL_KEYS);
+    // 原生 0x82A030 的基础滚动量为 21；ForceSelect 优先于 ForceFire。
+    constexpr int BASE_SCROLL_AMOUNT = 21;
+    int amount = BASE_SCROLL_AMOUNT;
+    if (InputManagerClass::Instance->IsForceSelectKeyPressed())
+        amount = Game::F2I(amount * 2.5);
+    else if (InputManagerClass::Instance->IsForceFireKeyPressed())
+        amount = std::max(MouseClass::Instance.MapRect.Width, MouseClass::Instance.MapRect.Height) << 8;
+    constexpr std::uint32_t KEY_BITS[] = {0x100, 0x1000, 0x1, 0x10};
+    constexpr DWORD DIRECTIONS[] = {6, 2, 0, 4};
+    for (std::size_t index = 0; index < 4; ++index)
+    {
+        if ((keys & KEY_BITS[index]) != 0)
+            MouseClass::Instance.ScrollMap(DIRECTIONS[index], reinterpret_cast<DWORD>(&amount), 1);
+    }
 }
 }

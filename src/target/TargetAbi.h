@@ -9,6 +9,14 @@ constexpr std::uintptr_t START_SESSION = 0x52D9A0;
 constexpr std::uintptr_t RANDOM_SEED_DEFAULT_READ = 0x52FDF9;
 constexpr std::uintptr_t RANDOM_SEED_GUARDED_READ = 0x52FE5C;
 constexpr std::uintptr_t MAIN_LOOP = 0x55D360;
+constexpr std::uintptr_t VIEWER_LOOP_CONTINUE = 0x55D8F7;
+constexpr std::uintptr_t VIEWER_HELD_LOOP = 0x55D830;
+constexpr std::uintptr_t VIEWER_EXIT_LOOP = 0x55DEC8;
+constexpr std::uintptr_t GAME_OVER_CONTINUE = 0x48CEA1;
+constexpr std::uintptr_t NATIVE_GAME_OVER = 0x48C8B0;
+constexpr std::uintptr_t NATIVE_DRAW_ON_TOP = 0x4F4480;
+// 原生 KeyboardProcess 将此槽当作四方向位，不能按 SDK 的 FileName 指针解释。
+constexpr std::uintptr_t VIEWER_SCROLL_KEYS = 0xABCE14;
 constexpr std::uintptr_t BEFORE_SIMULATION = 0x55DC99;
 constexpr std::uintptr_t EXECUTE_EVENTS = 0x64C380;
 constexpr std::uintptr_t FRAME_PARSER_CALL = 0x55DE40;

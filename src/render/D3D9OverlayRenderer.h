@@ -50,6 +50,7 @@ private:
     std::atomic<FailureReason> mFailureReason{FailureReason::None};
     bool mBackendInitialized = false;
     bool mVisible = true;
+    bool mHasShownEnded = false;
     bool mDeviceLost = false;
 };
 

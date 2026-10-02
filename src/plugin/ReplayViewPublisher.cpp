@@ -22,7 +22,8 @@ void ReplayViewPublisher::Begin(std::string replayName, int recordedLocalHouseIn
     viewer::GetReplayViewExchange().Clear();
 }
 
-void ReplayViewPublisher::Publish(std::optional<int> playbackSpeedSetting, bool canChangeSpeed)
+void ReplayViewPublisher::Publish(std::optional<int> playbackSpeedSetting, bool canChangeSpeed,
+    const viewer::PlaybackControls& controls)
 {
     const auto now = std::chrono::steady_clock::now();
     if (mSessionId == 0 || now < mNextSample)
@@ -34,7 +35,9 @@ void ReplayViewPublisher::Publish(std::optional<int> playbackSpeedSetting, bool 
     snapshot->mReplayName = mReplayName;
     snapshot->mRecordedLocalHouseIndex = mRecordedLocalHouseIndex;
     snapshot->mCanChangePlaybackSpeed = canChangeSpeed;
+    snapshot->mPlaybackControls = controls;
     mWorldReader.Read(*snapshot);
+    snapshot->mFrameNumber = controls.mLastCompletedFrame;
     const auto& iconStats = mWorldReader.GetIconStats();
     const std::uint32_t iconAttempts = iconStats.mPcx + iconStats.mShp + iconStats.mMissing;
     if (iconAttempts > mIconLogCount && mIconLogCount < 12)

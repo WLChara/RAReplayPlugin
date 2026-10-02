@@ -110,25 +110,7 @@ bool ReplaySession::OnFrameBegin()
         {
             return FailPlayback("Playback frame differs from current game frame");
         }
-        ReplayFrame frame;
-        const ReplayReadResult result = mSource->ReadFrame(frame, error);
-        if (result == ReplayReadResult::End)
-        {
-            mState = ReplayState::Finished;
-            EndPlayback();
-            return true;
-        }
-        if (result == ReplayReadResult::Error || frame.mFrameNumber != frameNumber ||
-            frame.mEvents.size() > FrameCodec::MAX_EVENTS_PER_FRAME ||
-            frame.mInputEffects.size() > FrameCodec::MAX_INPUT_EFFECTS_PER_FRAME)
-        {
-            return FailPlayback(result == ReplayReadResult::Error ? error :
-                "Playback frame record differs from current game frame");
-        }
-        mReadyFrame = std::move(frame);
-        mHasReadyFrame = true;
-        mHasAppliedInputEffects = false;
-        return true;
+        return PrefetchPlaybackFrame();
     }
     if (mState != ReplayState::Recording)
     {
@@ -234,6 +216,19 @@ bool ReplaySession::OnBeforeEvents()
 
 bool ReplaySession::OnFrameEnd()
 {
+    if (mWasPlayback && (mState == ReplayState::Playing || mState == ReplayState::Paused))
+    {
+        std::uint32_t frameNumber = 0;
+        std::uint32_t checksum = 0;
+        bool hasChecksum = false;
+        std::string error;
+        if (!mGame.ReadFrameContext(frameNumber, checksum, hasChecksum, error) ||
+            frameNumber != mLastProcessedFrame)
+            return FailPlayback(error.empty() ? "Playback completed an unprocessed frame" : error);
+        mLastCompletedFrame = frameNumber;
+        mHasCompletedPlaybackFrame = true;
+        return true;
+    }
     if (mState != ReplayState::Recording || !mHasPendingFrame)
     {
         return mState != ReplayState::Failed;
@@ -264,6 +259,59 @@ bool ReplaySession::OnFrameEnd()
     mHasPendingFrame = false;
     mHasCopiedEvents = false;
     return true;
+}
+
+bool ReplaySession::PrefetchPlaybackFrame()
+{
+    if (mHasReadyFrame)
+        return true;
+    ReplayFrame frame;
+    std::string error;
+    const auto result = mSource->ReadFrame(frame, error);
+    if (result == ReplayReadResult::End)
+    {
+        mState = ReplayState::Ended;
+        return true;
+    }
+    if (result == ReplayReadResult::Error || mNextFrame > UINT32_MAX ||
+        frame.mFrameNumber != mNextFrame ||
+        frame.mEvents.size() > FrameCodec::MAX_EVENTS_PER_FRAME ||
+        frame.mInputEffects.size() > FrameCodec::MAX_INPUT_EFFECTS_PER_FRAME)
+        return FailPlayback(result == ReplayReadResult::Error ? error :
+            "Playback frame record differs from current game frame");
+    mReadyFrame = std::move(frame);
+    mHasReadyFrame = true;
+    mHasAppliedInputEffects = false;
+    return true;
+}
+
+bool ReplaySession::OnAfterFrameLoop()
+{
+    if (!mHasCompletedPlaybackFrame)
+        return mState != ReplayState::Failed;
+    mHasCompletedPlaybackFrame = false;
+    return PrefetchPlaybackFrame();
+}
+
+bool ReplaySession::SetPaused(bool paused) noexcept
+{
+    if (paused && mState == ReplayState::Playing)
+        mState = ReplayState::Paused;
+    else if (!paused && mState == ReplayState::Paused)
+        mState = ReplayState::Playing;
+    else
+        return false;
+    return true;
+}
+
+bool ReplaySession::IsPlaybackHeld() const noexcept
+{
+    return mState == ReplayState::Paused || mState == ReplayState::Ended;
+}
+
+std::uint32_t ReplaySession::GetLastCompletedFrame() const noexcept
+{
+    return mLastCompletedFrame;
 }
 
 bool ReplaySession::ProcessPlaybackFrame()
@@ -336,7 +384,7 @@ void ReplaySession::Stop()
     {
         mSink->Abort();
     }
-    if (mState == ReplayState::Playing)
+    if (mWasPlayback)
     {
         EndPlayback();
     }
@@ -346,9 +394,10 @@ void ReplaySession::Stop()
     mHasReadyFrame = false;
     mHasAppliedInputEffects = false;
     mHasCopiedEvents = false;
+    mHasCompletedPlaybackFrame = false;
     mSink = nullptr;
     mSource = nullptr;
-    if (mState == ReplayState::Recording || mState == ReplayState::Playing)
+    if (mState == ReplayState::Recording || mState == ReplayState::Playing || IsPlaybackHeld())
     {
         mState = ReplayState::Finished;
     }

@@ -253,12 +253,45 @@ void TestPlaybackEndAndNoLiveFallback()
         game.mPhases[1] == "discardCommands" && game.mPhases[2] == "executeFrame" &&
         game.mPhases[3] == "applyEffects" && game.mPhases[4] == "discardCommands" &&
         game.mPhases[5] == "executeFrame", "effects must apply once before Logic execution");
+    Require(session.OnFrameEnd(), "last frame completes before EOF probing");
     game.mFrame = 2;
-    Require(session.OnFrameBegin() && session.GetState() == ReplayState::Finished &&
-        game.mEndCount == 1 && source.mReadCount == 3 &&
+    Require(session.OnAfterFrameLoop() && session.GetState() == ReplayState::Ended &&
+        game.mEndCount == 0 && source.mReadCount == 3 &&
         game.mExecuted.size() == 2 && session.OnFrameBegin() && source.mReadCount == 3 &&
-        session.ProcessPlaybackFrame(),
-        "EOF at next frame begin must end game before parser or another simulation");
+        session.ProcessPlaybackFrame() && session.IsPlaybackHeld() &&
+        !session.SetPaused(false) && session.GetLastCompletedFrame() == 1,
+        "EOF must hold the last complete frame without ending the game or resuming");
+    session.Stop();
+    session.Stop();
+    Require(game.mEndCount == 1, "explicit stop ends a held replay exactly once");
+}
+
+void TestPauseAndPrefetch()
+{
+    FakeGame game;
+    FakeSource source;
+    source.mFrames.resize(2);
+    source.mFrames[1].mFrameNumber = 1;
+    ReplaySession session(game);
+    Require(session.StartPlayback(source) && session.OnFrameBegin() && session.SetPaused(true),
+        "playback pauses with the original prefetched frame");
+    for (int iteration = 0; iteration < 10; ++iteration)
+        Require(session.OnFrameBegin() && session.OnBeforeSimulation() && session.ProcessPlaybackFrame(),
+            "held hooks remain playback without simulation");
+    Require(source.mReadCount == 1 && game.mApplyCount == 0 && game.mExecuted.empty(),
+        "pause does not reread, apply effects or execute events");
+    Require(session.SetPaused(false) && session.OnFrameBegin() && session.OnBeforeSimulation() &&
+        session.ProcessPlaybackFrame() && session.OnFrameEnd(), "resume executes original pending frame");
+    game.mFrame = 1;
+    Require(session.OnAfterFrameLoop() && session.OnAfterFrameLoop() && source.mReadCount == 2 &&
+        session.SetPaused(true) && session.OnFrameBegin() && session.SetPaused(false) &&
+        session.OnFrameBegin() && source.mReadCount == 2 && session.OnBeforeSimulation() &&
+        session.ProcessPlaybackFrame() && session.OnFrameEnd(),
+        "completed-frame prefetch survives pause and runs once");
+    game.mFrame = 2;
+    source.mReadFails = true;
+    Require(!session.OnAfterFrameLoop() && session.GetState() == ReplayState::Failed &&
+        game.mEndCount == 1, "post-frame corruption exits with an error instead of normal EOF");
 }
 
 void RequireMetadataFailure(const ReplaySessionInfo& recorded,
@@ -355,5 +388,6 @@ int main()
     TestRecordCompleteFramesOnly();
     TestRecordingFailureDoesNotEndGame();
     TestPlaybackEndAndNoLiveFallback();
+    TestPauseAndPrefetch();
     TestPlaybackFailures();
 }
