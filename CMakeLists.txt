@@ -75,7 +75,9 @@ target_include_directories(ReplayDomain PUBLIC src/replay)
 add_library(ReplayStorage STATIC
     src/storage/ReplayArchive.cpp
     src/storage/FrameReader.cpp
-    src/storage/FrameWriter.cpp)
+    src/storage/FrameWriter.cpp
+    src/storage/ViewerControlProtocol.cpp
+    src/storage/ViewerControlChannel.cpp)
 target_include_directories(ReplayStorage PUBLIC src/storage)
 target_link_libraries(ReplayStorage PUBLIC ReplayDomain PRIVATE bcrypt)
 
@@ -132,6 +134,9 @@ set_target_properties(SyringeHandshakeTests PROPERTIES
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(ViewerControlChannelTests tests/ViewerControlChannelTests.cpp)
+    target_link_libraries(ViewerControlChannelTests PRIVATE ReplayStorage)
+    add_test(NAME ViewerControlChannel COMMAND ViewerControlChannelTests "${CMAKE_SOURCE_DIR}/tests/fixtures")
     add_executable(CameoAssetsTests tests/CameoAssetsTests.cpp
         src/assets/CameoPixels.cpp src/assets/IconLoadCache.cpp)
     add_test(NAME CameoAssets COMMAND CameoAssetsTests)

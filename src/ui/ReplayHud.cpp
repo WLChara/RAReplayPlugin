@@ -101,6 +101,7 @@ void ReplayHud::Draw(const viewer::ReplayViewSnapshot& snapshot, viewer::ReplayV
     }
 
     PushHudStyle();
+    const float footerHeight = snapshot.mPlaybackControls.mRestartError.empty() ? FOOTER_HEIGHT : 110.0f;
     const ImGuiWindowFlags fixedFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
 
@@ -117,7 +118,7 @@ void ReplayHud::Draw(const viewer::ReplayViewSnapshot& snapshot, viewer::ReplayV
 
     const auto nativePanelTop = GetSidebarPanelTop(snapshot.mNativeUiLayout, extent.x, extent.y, mGameContentRect);
     const float panelTop = nativePanelTop.value_or(extent.y) + EDGE_GAP;
-    const float panelHeight = extent.y - FOOTER_HEIGHT - EDGE_GAP * 2.0f - panelTop;
+    const float panelHeight = extent.y - footerHeight - EDGE_GAP * 2.0f - panelTop;
     // 原生布局尚未就绪或空间不足时不显示侧栏，不能为了显示 HUD 覆盖雷达。
     if (nativePanelTop && panelHeight >= 120.0f)
     {
@@ -196,8 +197,8 @@ void ReplayHud::Draw(const viewer::ReplayViewSnapshot& snapshot, viewer::ReplayV
         ImGui::End();
         }
 
-    ImGui::SetNextWindowPos(ImVec2(origin.x + EDGE_GAP, origin.y + extent.y - FOOTER_HEIGHT - EDGE_GAP));
-    ImGui::SetNextWindowSize(ImVec2(extent.x - EDGE_GAP * 2.0f, FOOTER_HEIGHT));
+    ImGui::SetNextWindowPos(ImVec2(origin.x + EDGE_GAP, origin.y + extent.y - footerHeight - EDGE_GAP));
+    ImGui::SetNextWindowSize(ImVec2(extent.x - EDGE_GAP * 2.0f, footerHeight));
     if (ImGui::Begin("播放状态##ReplayFooter", nullptr, fixedFlags))
     {
         RecordWindowRegion(mInputRegions);

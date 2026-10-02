@@ -10,6 +10,7 @@
 #include "../replay/ReplaySession.h"
 #include "../storage/FrameReader.h"
 #include "../storage/FrameWriter.h"
+#include "../storage/ViewerControlChannel.h"
 #include "../target/TargetImage.h"
 
 #include <filesystem>
@@ -24,7 +25,9 @@ namespace
 class ReplayRuntime
 {
 public:
-    explicit ReplayRuntime(ReplayRequest request) : mRequest(std::move(request)), mSession(mGame) {}
+    ReplayRuntime(ReplayRequest request, const std::filesystem::path& gameDirectory)
+        : mRequest(std::move(request)), mSession(mGame),
+          mViewerChannel(gameDirectory, mRequest.mRequestId) {}
 
     bool IsPlayback() const { return mRequest.mMode == ReplayMode::Play; }
     bool IsStarted() const { return mIsStarted; }
@@ -225,6 +228,14 @@ private:
                     TrySetPlaybackViewingSpeed(command.mValue);
                 else if (command.mKind == viewer::ViewerCommandKind::SetPaused)
                     mSession.SetPaused(command.mValue != 0);
+                else if (command.mKind == viewer::ViewerCommandKind::RestartPlayback && !mHasExitRequested)
+                {
+                    if (mViewerChannel.RequestRestart(mViewerChannel.GetInitialFlags(), mRestartError))
+                    {
+                        mHasExitRequested = true;
+                        mGame.EndReplay();
+                    }
+                }
                 else if (command.mKind == viewer::ViewerCommandKind::ExitPlayback && !mHasExitRequested)
                 {
                     mHasExitRequested = true;
@@ -252,6 +263,8 @@ private:
                 ? viewer::PlaybackStatus::Ended : mSession.IsPlaybackHeld()
                     ? viewer::PlaybackStatus::Paused : viewer::PlaybackStatus::Playing;
             controls.mLastCompletedFrame = mSession.GetLastCompletedFrame();
+            controls.mCanRestart = mViewerChannel.CanRestart();
+            controls.mRestartError = mRestartError;
             mViewPublisher.Publish(override, mGame.CanControlViewerPlaybackSpeed(), controls);
         }
         catch (...)
@@ -288,6 +301,7 @@ private:
         Log(IsPlayback() ? "Replay playback started" : "Replay recording started");
         if (IsPlayback())
         {
+            mViewerChannel.Initialize();
             Log("Replay viewer command filtering active; native map input remains available");
             try
             {
@@ -330,6 +344,8 @@ private:
     replay::ReplaySession mSession;
     replay::ReplaySessionInfo mRecordedInfo;
     ReplayViewPublisher mViewPublisher;
+    storage::ViewerControlChannel mViewerChannel;
+    std::string mRestartError;
     bool mHasViewFailed = false;
     OverlayDiagnosticsReporter mOverlayDiagnostics;
     bool mIsStarted = false;
@@ -380,7 +396,7 @@ void OnStartup() noexcept
             Log(error.c_str());
             return;
         }
-        g_Runtime = std::make_unique<ReplayRuntime>(std::move(request));
+        g_Runtime = std::make_unique<ReplayRuntime>(std::move(request), gameDirectory);
         Log("Replay request consumed");
         if (g_Runtime->IsPlayback())
             g_Runtime->OpenPlaybackSource();

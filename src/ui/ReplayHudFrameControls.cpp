@@ -21,6 +21,13 @@ void DrawFrameControls(const viewer::ReplayViewSnapshot& snapshot, viewer::Repla
             status == viewer::PlaybackStatus::Playing ? 1 : 0});
     ImGui::EndDisabled();
     ImGui::SameLine();
+    ImGui::BeginDisabled(!snapshot.mPlaybackControls.mCanRestart || !snapshot.mActive);
+    if (ImGui::Button("重新播放"))
+        exchange.Submit({snapshot.mSessionId, viewer::ViewerCommandKind::RestartPlayback, 0});
+    ImGui::EndDisabled();
+    if (!snapshot.mPlaybackControls.mCanRestart && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("需要更新启动器并重新打开回放，才能重新播放");
+    ImGui::SameLine();
     if (ImGui::Button("退出回放"))
         exchange.Submit({snapshot.mSessionId, viewer::ViewerCommandKind::ExitPlayback, 0});
     if (status == viewer::PlaybackStatus::Ended)
@@ -28,6 +35,8 @@ void DrawFrameControls(const viewer::ReplayViewSnapshot& snapshot, viewer::Repla
         ImGui::SameLine();
         ImGui::TextDisabled("回放结束");
     }
+    if (!snapshot.mPlaybackControls.mRestartError.empty())
+        ImGui::TextWrapped("%s", snapshot.mPlaybackControls.mRestartError.c_str());
 
     if (snapshot.mTotalFrames && *snapshot.mTotalFrames > 0)
     {

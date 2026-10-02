@@ -82,6 +82,8 @@ struct PlaybackControls
 {
     PlaybackStatus mStatus = PlaybackStatus::Playing;
     std::uint32_t mLastCompletedFrame = 0;
+    bool mCanRestart = false;
+    std::string mRestartError;
 };
 
 /** 游戏线程发布的只读值快照；缺失数据用 optional/能力标志表示，不能当作零。 */
@@ -109,7 +111,7 @@ struct ReplayViewSnapshot
     std::vector<FpsSample> mRecordedFps;
 };
 
-enum class ViewerCommandKind { SetPlaybackSpeed, SetPaused, ExitPlayback };
+enum class ViewerCommandKind { SetPlaybackSpeed, SetPaused, ExitPlayback, RestartPlayback };
 struct ViewerCommand
 {
     std::uint64_t mSessionId = 0;
