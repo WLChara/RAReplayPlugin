@@ -6,14 +6,19 @@ internal sealed class HostReplayAdapter
 {
     private readonly Action startGameProcess;
     private readonly Action<Action> queueOnUiThread;
+    private readonly Func<bool> isGameRunning;
     private IDisposable activeSession;
     private string playbackRoot;
     private string playbackExecutable;
+    private bool exitHandled;
 
-    public HostReplayAdapter(Action startGameProcess, Action<Action> queueOnUiThread)
+    public HostReplayAdapter(Action startGameProcess, Action<Action> queueOnUiThread, Func<bool> isGameRunning = null)
     {
         this.startGameProcess = startGameProcess;
         this.queueOnUiThread = queueOnUiThread;
+        this.isGameRunning = isGameRunning ?? (() =>
+            System.Diagnostics.Process.GetProcessesByName("gamemd").Length != 0 ||
+            System.Diagnostics.Process.GetProcessesByName("Syringe").Length != 0);
     }
 
     public void OnLaunchFilesReady(string gamePath, string baseMapPath, string mapName)
@@ -26,10 +31,13 @@ internal sealed class HostReplayAdapter
     public void OnReplaySelected(string gamePath, string replayPath, string gameExecutablePath, uint viewerFlags = 0)
     {
         if (activeSession != null) throw new InvalidOperationException("已有活跃回放会话。");
-        activeSession = ReplayClient.PreparePlayback(gamePath, replayPath, gameExecutablePath,
-            manifest => manifest.FindBaseMap(gamePath), viewerFlags);
+        activeSession = queueOnUiThread == null ?
+            ReplayClient.PreparePlayback(gamePath, replayPath, gameExecutablePath, manifest => manifest.FindBaseMap(gamePath)) :
+            ReplayClient.PreparePlaybackWithRestart(gamePath, replayPath, gameExecutablePath,
+                manifest => manifest.FindBaseMap(gamePath), viewerFlags);
         playbackRoot = gamePath;
         playbackExecutable = gameExecutablePath;
+        exitHandled = false;
         StartPreparedGame();
     }
 
@@ -60,7 +68,11 @@ internal sealed class HostReplayAdapter
         if (session == null) return;
         PlaybackSession playback = session as PlaybackSession;
         uint viewerFlags = 0;
-        bool restart = allowRestart && playback != null && playback.TryConsumeRestart(out viewerFlags);
+        bool restart = false;
+        bool readRestart = allowRestart && !exitHandled && playback != null;
+        exitHandled = true;
+        try { restart = readRestart && playback.TryConsumeRestart(out viewerFlags); }
+        catch (Exception error) { Console.Error.WriteLine("读取重播意图失败，取消自动重播：" + error.Message); }
         string replayPath = playback == null ? null : playback.ReplayPath;
         string gamePath = playbackRoot;
         string executable = playbackExecutable;
@@ -68,7 +80,11 @@ internal sealed class HostReplayAdapter
         session.Dispose();
         activeSession = null;
         if (restart)
-            queueOnUiThread(() => OnReplaySelected(gamePath, replayPath, executable, viewerFlags));
+            queueOnUiThread(() =>
+            {
+                if (activeSession != null || isGameRunning()) return;
+                OnReplaySelected(gamePath, replayPath, executable, viewerFlags);
+            });
     }
 }
 

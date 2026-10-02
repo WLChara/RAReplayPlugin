@@ -31,7 +31,7 @@ namespace RAReplay.Client
         public string ReplayPath { get; private set; }
         public ReplayLaunchManifest Manifest { get; private set; }
 
-        internal static PlaybackSession Prepare(string root, ReplayArchive archive, uint viewerFlags)
+        internal static PlaybackSession Prepare(string root, ReplayArchive archive, uint viewerFlags, bool enableRestart)
         {
             PlaybackSession session = new PlaybackSession(root, archive);
             try
@@ -46,7 +46,8 @@ namespace RAReplay.Client
                     ReplayRuntimeRequest.Play, archive.Path, new byte[0]);
                 session.request = runtimeRequest.Serialize();
                 ReplayRuntimeRequest.Publish(root, session.request);
-                session.viewerChannel = ReplayViewerChannel.Create(root, runtimeRequest.RequestId, viewerFlags);
+                if (enableRestart)
+                    session.viewerChannel = ReplayViewerChannel.Create(root, runtimeRequest.RequestId, viewerFlags);
                 return session;
             }
             catch (Exception prepareError)

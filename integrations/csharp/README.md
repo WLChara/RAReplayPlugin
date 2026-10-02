@@ -10,7 +10,7 @@
 
 运行离线验证：
 
-播放会话同时拥有 `rareplay-viewer-<请求ID原始16字节的小写十六进制>.bin`，仅启动前原子创建，禁止覆盖。RPVC 固定为 32 字节小端：魔数 `0x43565052`、版本 `1`、动作（`0` Ready、`1` Restart）、选项（仅 bit0 为 50% 黑幕）、16 字节 RequestId。首次播放选项为 `0`，重播通过 `PreparePlayback` 的可选 `viewerFlags` 传递；原四参数入口保留。
+播放会话同时拥有 `rareplay-viewer-<请求ID原始16字节的小写十六进制>.bin`，仅启动前原子创建，禁止覆盖。RPVC 固定为 32 字节小端：魔数 `0x43565052`、版本 `1`、动作（`0` Ready、`1` Restart）、选项（仅 bit0 为 50% 黑幕）、16 字节 RequestId。首次播放选项为 `0`，具备 UI dispatcher 和完整退出恢复逻辑的宿主显式调用 `PreparePlaybackWithRestart`，重播通过可选 `viewerFlags` 传递。原四参数 `PreparePlayback` 的真实方法签名保留，且不会发布 Ready，避免旧编译宿主广告无法处理的重播能力；缺少 dispatcher 时同样使用旧入口。
 
 游戏真正退出后先调用 `PlaybackSession.TryConsumeRestart(out flags)`，只接受当前请求一次，再成功 `Dispose()` 恢复启动文件及删除自有请求、查看器文件。只有恢复成功才能用宿主现有 dispatcher 排回 UI 线程，以会话自己保存的录像路径新建播放会话并调用原有启动方法；不得从退出工作线程直接启动。普通退出、启动失败、非法或旧请求不重播；清理失败保留会话、报告错误、取消重播，重试恢复也不补发重播。文件不携带路径，插件不能指定重开的录像。库不改 RPRT V2、`.yrrep` 或 RPF2，不实现暂停或管理进程。
 

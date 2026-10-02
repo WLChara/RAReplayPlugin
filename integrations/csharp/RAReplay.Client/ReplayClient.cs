@@ -27,11 +27,17 @@ namespace RAReplay.Client
         public static PlaybackSession PreparePlayback(string gamePath, string replayPath,
             string gameExecutablePath, Func<ReplayLaunchManifest, string> resolveBaseMap)
         {
-            return PreparePlayback(gamePath, replayPath, gameExecutablePath, resolveBaseMap, 0);
+            return PreparePlaybackCore(gamePath, replayPath, gameExecutablePath, resolveBaseMap, 0, false);
         }
 
-        public static PlaybackSession PreparePlayback(string gamePath, string replayPath,
+        public static PlaybackSession PreparePlaybackWithRestart(string gamePath, string replayPath,
             string gameExecutablePath, Func<ReplayLaunchManifest, string> resolveBaseMap, uint viewerFlags = 0)
+        {
+            return PreparePlaybackCore(gamePath, replayPath, gameExecutablePath, resolveBaseMap, viewerFlags, true);
+        }
+
+        private static PlaybackSession PreparePlaybackCore(string gamePath, string replayPath,
+            string gameExecutablePath, Func<ReplayLaunchManifest, string> resolveBaseMap, uint viewerFlags, bool enableRestart)
         {
             if (resolveBaseMap == null) throw new ArgumentNullException(nameof(resolveBaseMap));
             string root = ReplayLaunchManifest.Root(gamePath);
@@ -56,7 +62,7 @@ namespace RAReplay.Client
                     ReplayLaunchManifest.HashFile(fullMap), archive.Manifest.BaseMapHash))
                 throw new InvalidDataException("回放地图不在游戏目录内或内容不匹配。");
 
-            return PlaybackSession.Prepare(root, archive, viewerFlags);
+            return PlaybackSession.Prepare(root, archive, viewerFlags, enableRestart);
         }
 
         private static bool IsSafeChild(string root, string fullPath)

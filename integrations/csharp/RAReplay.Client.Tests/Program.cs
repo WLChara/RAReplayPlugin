@@ -92,6 +92,8 @@ internal static class Program
             ReplayRuntimeRequest request = ReplayRuntimeRequest.Deserialize(File.ReadAllBytes(marker));
             Check(request.Mode == ReplayRuntimeRequest.Play && request.ManifestBytes.Length == 0,
                 "play request");
+            Check(Directory.GetFiles(root, "rareplay-viewer-*.bin").Length == 0,
+                "legacy four-argument host must not advertise restart");
             Check(!File.ReadAllBytes(iniPath).SequenceEqual(ini), "playback endpoints");
             Check(File.ReadAllBytes(spawnMapPath).SequenceEqual(spawnMap), "playback spawn map");
         }
@@ -154,7 +156,7 @@ internal static class Program
 
         int starts = 0;
         System.Collections.Generic.Queue<Action> pending = new System.Collections.Generic.Queue<Action>();
-        HostReplayAdapter host = new HostReplayAdapter(() => starts++, callback => pending.Enqueue(callback));
+        HostReplayAdapter host = new HostReplayAdapter(() => starts++, callback => pending.Enqueue(callback), () => false);
         host.OnReplaySelected(root, archivePath, exePath);
         host.OnGameProcessExited();
         Check(starts == 1 && pending.Count == 0, "ordinary exit must not queue restart");
