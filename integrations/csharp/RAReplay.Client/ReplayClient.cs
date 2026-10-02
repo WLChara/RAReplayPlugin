@@ -27,6 +27,12 @@ namespace RAReplay.Client
         public static PlaybackSession PreparePlayback(string gamePath, string replayPath,
             string gameExecutablePath, Func<ReplayLaunchManifest, string> resolveBaseMap)
         {
+            return PreparePlayback(gamePath, replayPath, gameExecutablePath, resolveBaseMap, 0);
+        }
+
+        public static PlaybackSession PreparePlayback(string gamePath, string replayPath,
+            string gameExecutablePath, Func<ReplayLaunchManifest, string> resolveBaseMap, uint viewerFlags = 0)
+        {
             if (resolveBaseMap == null) throw new ArgumentNullException(nameof(resolveBaseMap));
             string root = ReplayLaunchManifest.Root(gamePath);
             if (!File.Exists(Path.Combine(root, "RAReplayPlugin.dll")))
@@ -50,7 +56,7 @@ namespace RAReplay.Client
                     ReplayLaunchManifest.HashFile(fullMap), archive.Manifest.BaseMapHash))
                 throw new InvalidDataException("回放地图不在游戏目录内或内容不匹配。");
 
-            return PlaybackSession.Prepare(root, archive);
+            return PlaybackSession.Prepare(root, archive, viewerFlags);
         }
 
         private static bool IsSafeChild(string root, string fullPath)

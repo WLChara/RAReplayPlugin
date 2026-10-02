@@ -14,6 +14,7 @@ namespace RAReplay.Client
         private byte[] appliedIniHash;
         private byte[] appliedMapHash;
         private byte[] request;
+        private ReplayViewerChannel viewerChannel;
         private bool disposed;
 
         private PlaybackSession(string root, ReplayArchive archive)
@@ -30,7 +31,7 @@ namespace RAReplay.Client
         public string ReplayPath { get; private set; }
         public ReplayLaunchManifest Manifest { get; private set; }
 
-        internal static PlaybackSession Prepare(string root, ReplayArchive archive)
+        internal static PlaybackSession Prepare(string root, ReplayArchive archive, uint viewerFlags)
         {
             PlaybackSession session = new PlaybackSession(root, archive);
             try
@@ -41,9 +42,11 @@ namespace RAReplay.Client
                 session.appliedMapHash = ReplayLaunchManifest.Hash(replayMap);
                 AtomicWrite(session.spawnIniPath, replayIni);
                 AtomicWrite(session.spawnMapPath, replayMap);
-                session.request = ReplayRuntimeRequest.Create(
-                    ReplayRuntimeRequest.Play, archive.Path, new byte[0]).Serialize();
+                ReplayRuntimeRequest runtimeRequest = ReplayRuntimeRequest.Create(
+                    ReplayRuntimeRequest.Play, archive.Path, new byte[0]);
+                session.request = runtimeRequest.Serialize();
                 ReplayRuntimeRequest.Publish(root, session.request);
+                session.viewerChannel = ReplayViewerChannel.Create(root, runtimeRequest.RequestId, viewerFlags);
                 return session;
             }
             catch (Exception prepareError)
@@ -55,6 +58,16 @@ namespace RAReplay.Client
                         prepareError, restoreError);
                 }
                 throw;
+            }
+        }
+
+        // 退出处理先消费意图，再成功 Dispose，宿主才能在 UI 线程启动新会话。
+        public bool TryConsumeRestart(out uint viewerFlags)
+        {
+            lock (disposeGate)
+            {
+                viewerFlags = 0;
+                return !disposed && viewerChannel != null && viewerChannel.TryConsumeRestart(out viewerFlags);
             }
         }
 
@@ -73,6 +86,8 @@ namespace RAReplay.Client
                 {
                     if (request != null) ReplayRuntimeRequest.DeleteIfOwned(root, request);
                 }
+                catch (Exception error) { if (failure == null) failure = error; }
+                try { if (viewerChannel != null) viewerChannel.Dispose(); }
                 catch (Exception error) { if (failure == null) failure = error; }
                 if (failure != null) throw new IOException("回放退出后恢复启动文件失败。", failure);
                 disposed = true;

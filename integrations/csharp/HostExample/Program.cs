@@ -5,11 +5,15 @@ using RAReplay.Client;
 internal sealed class HostReplayAdapter
 {
     private readonly Action startGameProcess;
+    private readonly Action<Action> queueOnUiThread;
     private IDisposable activeSession;
+    private string playbackRoot;
+    private string playbackExecutable;
 
-    public HostReplayAdapter(Action startGameProcess)
+    public HostReplayAdapter(Action startGameProcess, Action<Action> queueOnUiThread)
     {
         this.startGameProcess = startGameProcess;
+        this.queueOnUiThread = queueOnUiThread;
     }
 
     public void OnLaunchFilesReady(string gamePath, string baseMapPath, string mapName)
@@ -19,11 +23,13 @@ internal sealed class HostReplayAdapter
         StartPreparedGame();
     }
 
-    public void OnReplaySelected(string gamePath, string replayPath, string gameExecutablePath)
+    public void OnReplaySelected(string gamePath, string replayPath, string gameExecutablePath, uint viewerFlags = 0)
     {
         if (activeSession != null) throw new InvalidOperationException("已有活跃回放会话。");
         activeSession = ReplayClient.PreparePlayback(gamePath, replayPath, gameExecutablePath,
-            manifest => manifest.FindBaseMap(gamePath));
+            manifest => manifest.FindBaseMap(gamePath), viewerFlags);
+        playbackRoot = gamePath;
+        playbackExecutable = gameExecutablePath;
         StartPreparedGame();
     }
 
@@ -32,7 +38,7 @@ internal sealed class HostReplayAdapter
         try { startGameProcess(); }
         catch (Exception startError)
         {
-            try { OnGameProcessExited(); }
+            try { Cleanup(false); }
             catch (Exception restoreError)
             {
                 throw new AggregateException("启动失败，且回放清理失败。",
@@ -45,19 +51,36 @@ internal sealed class HostReplayAdapter
 
     public void OnGameProcessExited()
     {
+        Cleanup(true);
+    }
+
+    private void Cleanup(bool allowRestart)
+    {
         IDisposable session = activeSession;
         if (session == null) return;
+        PlaybackSession playback = session as PlaybackSession;
+        uint viewerFlags = 0;
+        bool restart = allowRestart && playback != null && playback.TryConsumeRestart(out viewerFlags);
+        string replayPath = playback == null ? null : playback.ReplayPath;
+        string gamePath = playbackRoot;
+        string executable = playbackExecutable;
+        // Dispose 异常时不清空所有者、不排队；恢复重试也不能补发已消费的重播。
         session.Dispose();
         activeSession = null;
+        if (restart)
+            queueOnUiThread(() => OnReplaySelected(gamePath, replayPath, executable, viewerFlags));
     }
 }
 
+#if !REPLAY_HOST_TESTS
 internal static class Program
 {
     private static void Main()
     {
         HostReplayAdapter example = new HostReplayAdapter(() =>
-            Console.WriteLine("模拟现有宿主的 StartGameProcess 调用"));
+            Console.WriteLine("模拟现有宿主的 StartGameProcess 调用"), callback =>
+            Console.WriteLine("模拟排回宿主 UI 线程，不执行真实启动"));
         Console.WriteLine("将 OnLaunchFilesReady、OnReplaySelected 和 OnGameProcessExited 接入现有宿主回调。");
     }
 }
+#endif
