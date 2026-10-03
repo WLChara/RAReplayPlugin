@@ -17,14 +17,14 @@ internal static class Program
         using (SHA256 sha = SHA256.Create()) return sha.ComputeHash(bytes);
     }
 
-    private static void WriteArchive(string path, byte[] exe, byte[] metadata)
+    private static void WriteArchive(string path, byte[] exe, byte[] metadata, uint streamVersion = 2)
     {
         byte[] stream;
         using (MemoryStream output = new MemoryStream())
         using (BinaryWriter writer = new BinaryWriter(output))
         {
             writer.Write(0x32465052u);
-            writer.Write(2u);
+            writer.Write(streamVersion);
             writer.Write(111u);
             writer.Write(3u);
             writer.Write(1u);
@@ -76,6 +76,13 @@ internal static class Program
         ReplayArchive archive = ReplayArchive.Open(archivePath);
         archive.ValidatePayload();
         Check(archive.Manifest.MapName == "测试地图", "archive metadata");
+
+        WriteArchive(archivePath, exe, metadata, 1);
+        bool legacyRejected = false;
+        try { ReplayClient.PreparePlayback(root, archivePath, exePath, loaded => loaded.FindBaseMap(root)); }
+        catch (InvalidDataException) { legacyRejected = true; }
+        Check(legacyRejected && !File.Exists(marker), "V1 缺输入效果时在启动前拒绝");
+        WriteArchive(archivePath, exe, metadata);
 
         using (RecordingSession recording = ReplayClient.PrepareRecording(root, mapPath, "测试地图"))
         {
@@ -207,12 +214,13 @@ internal static class Program
         Check(pending.Count == 0, "cleanup retry cannot replay consumed restart");
     }
 
-    private static int Main()
+    private static int Main(string[] args)
     {
         string root = Path.Combine(Path.GetTempPath(), "RAReplayClientTests-" + Guid.NewGuid().ToString("N"));
         try
         {
             Run(root);
+            FrameStreamValidationTests.Run(root, args.Length == 0 ? null : args[0]);
             Console.WriteLine("RAReplay.Client 合成协议与重播生命周期检查通过");
             return 0;
         }

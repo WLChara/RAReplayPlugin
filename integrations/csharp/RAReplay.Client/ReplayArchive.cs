@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -15,6 +16,7 @@ namespace RAReplay.Client
         public byte[] GameExeHash { get; private set; }
         public uint StreamVersion { get; private set; }
         public bool HasPlayerInputEffects { get { return StreamVersion >= 2; } }
+        public bool HasRecordedGroups { get { return StreamVersion >= 3; } }
         private byte[] metadataHash;
         private byte[] contentHash;
 
@@ -40,7 +42,7 @@ namespace RAReplay.Client
                 if (reader.ReadUInt32() != 0x32465052)
                     throw new InvalidDataException("回放帧流头无效。");
                 uint streamVersion = reader.ReadUInt32();
-                if (streamVersion != 1 && streamVersion != 2)
+                if (streamVersion != 1 && streamVersion != 2 && streamVersion != 3)
                     throw new InvalidDataException("不支持的回放帧流版本。");
                 return new ReplayArchive
                 {
@@ -103,7 +105,7 @@ namespace RAReplay.Client
                 uint magic = reader.ReadUInt32();
                 uint streamVersion = reader.ReadUInt32();
                 if (magic != 0x32465052 || streamVersion != StreamVersion ||
-                    (streamVersion != 1 && streamVersion != 2) || reader.ReadUInt32() != 111)
+                    (streamVersion != 1 && streamVersion != 2 && streamVersion != 3) || reader.ReadUInt32() != 111)
                     throw new InvalidDataException("回放帧流头无效。");
                 reader.ReadUInt32(); // gameMode
                 reader.ReadUInt32(); // localHouseIndex
@@ -113,17 +115,22 @@ namespace RAReplay.Client
                 uint expected = 0;
                 while (stream.Position < stream.Length)
                 {
-                    long frameHeaderBytes = streamVersion == 2 ? 20 : 16;
+                    long frameHeaderBytes = streamVersion == 3 ? 24 : streamVersion == 2 ? 20 : 16;
                     if (stream.Length - stream.Position < frameHeaderBytes)
                         throw new InvalidDataException("回放帧记录被截断。");
                     uint frame = reader.ReadUInt32();
                     reader.ReadUInt32(); // checksumBeforeDispatch
                     uint count = reader.ReadUInt32();
                     uint flags = reader.ReadUInt32();
-                    uint effectCount = streamVersion == 2 ? reader.ReadUInt32() : 0;
-                    if (frame != expected || count > 16384 || (flags & ~1u) != 0 ||
-                        effectCount > 4096 ||
-                        stream.Length - stream.Position < count * 111L + effectCount * 40L)
+                    uint effectCount = streamVersion >= 2 ? reader.ReadUInt32() : 0;
+                    uint groupMemberCount = streamVersion == 3 ? reader.ReadUInt32() : 0;
+                    uint allowedFlags = streamVersion == 3 ? 3u : 1u;
+                    bool hasGroupSnapshot = (flags & 2u) != 0;
+                    if (frame != expected || count > 16384 || (flags & ~allowedFlags) != 0 ||
+                        effectCount > 4096 || groupMemberCount > 16384 ||
+                        (!hasGroupSnapshot && groupMemberCount != 0) ||
+                        (streamVersion == 3 && expected == 0 && !hasGroupSnapshot) ||
+                        stream.Length - stream.Position < count * 111L + effectCount * 40L + groupMemberCount * 12L)
                         throw new InvalidDataException("回放帧顺序、事件数量或标志无效。");
                     stream.Position += count * 111L;
                     for (uint i = 0; i < effectCount; i++)
@@ -141,8 +148,35 @@ namespace RAReplay.Client
                         if (kind != 1 || reverse > 1)
                             throw new InvalidDataException("回放玩家输入效果字段无效。");
                     }
+                    ValidateGroupMembers(reader, groupMemberCount);
                     expected++;
                 }
+                // V3 的首帧完整快照区分“没有记录”和“记录为空”，不能以零帧代替。
+                if (streamVersion == 3 && expected == 0)
+                    throw new InvalidDataException("回放缺少首帧编队快照。");
+            }
+        }
+
+        private static void ValidateGroupMembers(BinaryReader reader, uint count)
+        {
+            if (count == 0) return;
+            // 调用方已按剩余字节和成员上限核对长度；集合仅在当前完整快照内去重。
+            HashSet<uint> objectIds = new HashSet<uint>();
+            uint previousGroup = 0;
+            uint previousId = 0;
+            for (uint i = 0; i < count; i++)
+            {
+                uint groupIndex = reader.ReadUInt32();
+                uint objectId = reader.ReadUInt32();
+                uint targetKind = reader.ReadUInt32();
+                bool outOfOrder = i > 0 && (groupIndex < previousGroup ||
+                    (groupIndex == previousGroup && objectId <= previousId));
+                // 52 是目标引擎打包 NetID 的通用 Abstract 标记，并非具体单位类型。
+                if (groupIndex > 9 || objectId == 0 || targetKind != 52 || outOfOrder ||
+                    !objectIds.Add(objectId))
+                    throw new InvalidDataException("回放编队成员字段、排序或唯一性无效。");
+                previousGroup = groupIndex;
+                previousId = objectId;
             }
         }
 
