@@ -24,6 +24,7 @@ public:
 private:
     ArchiveWriter mArchive;
     std::uint64_t mNextFrame = 0;
+    std::uint32_t mStreamVersion = 2;
     bool mIsOpen = false;
     bool mHasFailed = false;
 };

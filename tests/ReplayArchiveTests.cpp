@@ -313,6 +313,91 @@ void TestLegacyFrameArchiveCanBeInspected()
         reader.ReadFrame(frame, error) == rareplay::replay::ReplayReadResult::End,
         "legacy frame should decode with no input effects");
 }
+
+void TestGroupFrameArchiveVersionAndInitialSnapshot()
+{
+    using namespace rareplay::replay;
+    TemporaryDirectory directory;
+    ReplaySessionInfo info{3, 1, 0, 6, 42, 3};
+    FrameWriter writer;
+    std::string error;
+    Require(writer.Open(directory.File(L"empty-v3.rep").wstring(), TargetHash(), {1}, info, error),
+        "v3 writer opens");
+    Require(!writer.Finish(error), "v3 cannot finish without an initial frame");
+    writer.Abort();
+    Require(writer.Open(directory.File(L"missing-v3.rep").wstring(), TargetHash(), {1}, info, error),
+        "v3 writer opens after abort");
+    ReplayFrame first;
+    Require(!writer.AppendFrame(first, error) && !writer.Finish(error),
+        "v3 writer enforces initial snapshot using its header version");
+    writer.Abort();
+    const auto path = directory.File(L"groups-v3.rep");
+    Require(writer.Open(path.wstring(), TargetHash(), {1}, info, error), "v3 writer reopens");
+    first.mRecordedGroups.emplace();
+    ReplayFrame update;
+    update.mFrameNumber = 1;
+    update.mRecordedGroups = RecordedControlGroupSnapshot{{{0, 101, 52}, {9, 202, 52}}};
+    ReplayFrame unchanged;
+    unchanged.mFrameNumber = 2;
+    ReplayFrame clear;
+    clear.mFrameNumber = 3;
+    clear.mRecordedGroups.emplace();
+    Require(writer.AppendFrame(first, error) && writer.AppendFrame(update, error) &&
+        writer.AppendFrame(unchanged, error) && writer.AppendFrame(clear, error) &&
+        writer.Finish(error), "group update sequence finalizes");
+    const auto bytes = ReadBytes(path);
+    Require(bytes[96 + 1 + 4] == 3 && bytes.size() == 96 + 1 + 32 + 4 * 24 + 2 * 12,
+        "v3 writer header and frame lengths agree");
+    FrameReader reader;
+    std::vector<std::uint8_t> metadata;
+    Require(reader.Open(path.wstring(), TargetHash(), metadata, error) &&
+        reader.GetSessionInfo(info, error) && info.mStreamVersion == 3,
+        "v3 archive opens with matching version");
+    for (const auto& expected : {first, update, unchanged, clear})
+    {
+        ReplayFrame decoded;
+        Require(reader.ReadFrame(decoded, error) == ReplayReadResult::Frame &&
+            decoded.mFrameNumber == expected.mFrameNumber &&
+            decoded.mRecordedGroups == expected.mRecordedGroups,
+            "archive preserves optional group updates");
+    }
+    ReplayFrame decoded;
+    Require(reader.ReadFrame(decoded, error) == ReplayReadResult::End, "v3 ends normally");
+    reader.Close();
+
+    // 外层 SHA 正确也不能让被截断的帧载荷变成正常 EOF。
+    const auto truncatedPath = directory.File(L"truncated-group.rep");
+    std::array<std::uint8_t, FrameCodec::HEADER_BYTES> header{};
+    Require(FrameCodec::EncodeHeader(info, header, error), "v3 header encodes");
+    std::vector<std::uint8_t> record;
+    update.mFrameNumber = 0;
+    Require(FrameCodec::EncodeFrame(update, record, error, 3), "v3 initial member frame encodes");
+    record.pop_back();
+    ArchiveWriter archive;
+    Require(archive.Open(truncatedPath.wstring(), TargetHash(), {1}, error) &&
+        archive.Write(header.data(), static_cast<int>(header.size())) == static_cast<int>(header.size()) &&
+        archive.Write(record.data(), static_cast<int>(record.size())) == static_cast<int>(record.size()) &&
+        archive.Finish(error), "truncated frame has a valid outer container");
+    Require(reader.Open(truncatedPath.wstring(), TargetHash(), metadata, error) &&
+        reader.ReadFrame(decoded, error) == ReplayReadResult::Error &&
+        reader.ReadFrame(decoded, error) == ReplayReadResult::Error,
+        "truncated group payload fails and poisons reader");
+    reader.Close();
+
+    const auto emptyPath = directory.File(L"header-only-v3.rep");
+    Require(archive.Open(emptyPath.wstring(), TargetHash(), {1}, error) &&
+        archive.Write(header.data(), static_cast<int>(header.size())) == static_cast<int>(header.size()) &&
+        archive.Finish(error), "header-only stream fits outer container");
+    Require(reader.Open(emptyPath.wstring(), TargetHash(), metadata, error) &&
+        reader.ReadFrame(decoded, error) == ReplayReadResult::Error,
+        "v3 reader rejects missing initial frame");
+    reader.Close();
+
+    info.mStreamVersion = 2;
+    Require(writer.Open(directory.File(L"groups-v2.rep").wstring(), TargetHash(), {1}, info, error) &&
+        !writer.AppendFrame(first, error), "writer cannot emit groups into v2");
+    writer.Abort();
+}
 }
 
 int main()
@@ -323,4 +408,5 @@ int main()
     TestFrameArchiveRoundTrip();
     TestReaderRejectsValidContainerWithSkippedFrame();
     TestLegacyFrameArchiveCanBeInspected();
+    TestGroupFrameArchiveVersionAndInitialSnapshot();
 }

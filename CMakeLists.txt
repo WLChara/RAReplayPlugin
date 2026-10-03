@@ -69,6 +69,7 @@ target_link_libraries(ReplayHudPreview PRIVATE ReplayRender)
 
 add_library(ReplayDomain STATIC
     src/replay/FrameCodec.cpp
+    src/replay/RecordedControlGroups.cpp
     src/replay/ReplaySession.cpp)
 target_include_directories(ReplayDomain PUBLIC src/replay)
 
@@ -168,6 +169,10 @@ if(BUILD_TESTING)
     add_executable(FrameCodecTests tests/FrameCodecTests.cpp)
     target_link_libraries(FrameCodecTests PRIVATE ReplayDomain)
     add_test(NAME FrameCodec COMMAND FrameCodecTests)
+
+    add_executable(RecordedControlGroupsTests tests/RecordedControlGroupsTests.cpp)
+    target_link_libraries(RecordedControlGroupsTests PRIVATE ReplayDomain)
+    add_test(NAME RecordedControlGroups COMMAND RecordedControlGroupsTests "${CMAKE_SOURCE_DIR}/tests/fixtures")
 
     add_executable(ReplaySessionTests tests/ReplaySessionTests.cpp)
     target_link_libraries(ReplaySessionTests PRIVATE ReplayDomain)

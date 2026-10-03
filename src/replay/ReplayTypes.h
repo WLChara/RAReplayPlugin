@@ -1,5 +1,7 @@
 #pragma once
 
+#include "RecordedControlGroups.h"
+
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -34,6 +36,7 @@ struct ReplayFrame
     bool mHasChecksum = false;
     std::vector<RecordedEvent> mEvents;
     std::vector<RecordedInputEffect> mInputEffects;
+    std::optional<RecordedControlGroupSnapshot> mRecordedGroups;
 };
 
 struct ReplaySessionInfo

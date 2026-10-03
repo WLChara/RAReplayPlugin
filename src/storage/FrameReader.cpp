@@ -64,6 +64,12 @@ replay::ReplayReadResult FrameReader::ReadFrame(replay::ReplayFrame& outFrame,
     }
     if (result == replay::ReplayReadResult::End)
     {
+        if (mInfo.mStreamVersion == 3 && mNextFrame == 0)
+        {
+            error = "编队帧流缺少初始完整快照";
+            mHasFailed = true;
+            return replay::ReplayReadResult::Error;
+        }
         return result;
     }
     if (mNextFrame > UINT32_MAX || frame.mFrameNumber != mNextFrame)

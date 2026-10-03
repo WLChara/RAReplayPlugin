@@ -24,6 +24,7 @@ bool FrameWriter::Open(const std::wstring& path,
         return false;
     }
     mNextFrame = sessionInfo.mFirstFrame;
+    mStreamVersion = sessionInfo.mStreamVersion;
     mIsOpen = true;
     error.clear();
     return true;
@@ -39,7 +40,7 @@ bool FrameWriter::AppendFrame(const replay::ReplayFrame& frame, std::string& err
         return false;
     }
     std::vector<std::uint8_t> bytes;
-    if (!replay::FrameCodec::EncodeFrame(frame, bytes, error) ||
+    if (!replay::FrameCodec::EncodeFrame(frame, bytes, error, mStreamVersion) ||
         mArchive.Write(bytes.data(), static_cast<int>(bytes.size())) !=
             static_cast<int>(bytes.size()))
     {
@@ -57,7 +58,7 @@ bool FrameWriter::AppendFrame(const replay::ReplayFrame& frame, std::string& err
 
 bool FrameWriter::Finish(std::string& error)
 {
-    if (!mIsOpen || mHasFailed)
+    if (!mIsOpen || mHasFailed || (mStreamVersion == 3 && mNextFrame == 0))
     {
         error = "Replay writer is not finishable";
         return false;
@@ -76,6 +77,7 @@ void FrameWriter::Abort() noexcept
 {
     mArchive.Abort();
     mNextFrame = 0;
+    mStreamVersion = 2;
     mIsOpen = false;
     mHasFailed = false;
 }

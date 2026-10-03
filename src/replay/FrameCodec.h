@@ -21,7 +21,7 @@ public:
         std::array<std::uint8_t, HEADER_BYTES>& outBytes, std::string& error);
     static bool DecodeHeader(std::istream& stream, ReplaySessionInfo& outInfo, std::string& error);
     static bool EncodeFrame(const ReplayFrame& frame, std::vector<std::uint8_t>& outBytes,
-        std::string& error);
+        std::string& error, std::uint32_t streamVersion = 2);
     static ReplayReadResult ReadFrame(std::istream& stream, ReplayFrame& outFrame,
         std::string& error, std::uint32_t streamVersion = 2);
 };
