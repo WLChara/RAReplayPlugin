@@ -61,6 +61,7 @@ struct ControlGroup
 {
     int mNumber = 0;
     std::vector<UnitSummary> mUnits;
+    std::uint32_t mUnmatchedMemberCount = 0;
 };
 
 struct FpsSample

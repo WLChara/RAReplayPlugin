@@ -1,5 +1,6 @@
 #include "ReplayWorldReader.h"
 #include "icons/CameoReader.h"
+#include "control_groups/RecordedControlGroupProjection.h"
 
 using byte = unsigned char;
 
@@ -23,6 +24,7 @@ using byte = unsigned char;
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace rareplay::game_api
 {
@@ -80,7 +82,8 @@ const IconStats& ReplayWorldReader::GetIconStats() const noexcept
     return mImpl->mCameos.GetStats();
 }
 
-void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot)
+void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
+    const std::optional<replay::RecordedControlGroupSnapshot>& recordedGroups)
 {
     mImpl->mCameos.BeginSample();
     snapshot.mFrameNumber = static_cast<std::uint32_t>(Unsorted::CurrentFrame);
@@ -180,6 +183,21 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot)
     }
 
     std::vector<std::map<std::pair<int, std::string>, viewer::UnitSummary>> summaries(snapshot.mPlayers.size());
+    std::unordered_set<std::uint32_t> recordedIds;
+    if (recordedGroups)
+        for (const auto& member : recordedGroups->mMembers)
+            recordedIds.insert(member.mObjectId);
+    std::unordered_map<std::uint32_t, viewer::UnitSummary> resolvedGroupMembers;
+    const auto describeUnit = [this](TechnoClass* techno, const TechnoTypeClass* type)
+    {
+        viewer::UnitSummary unit;
+        unit.mTypeId.assign(type->ID, strnlen_s(type->ID, sizeof(type->ID)));
+        unit.mName = TypeName(type);
+        unit.mCategory = Category(techno->WhatAmI());
+        unit.mIcon = mImpl->mCameos.Resolve(type);
+        unit.mCount = 1;
+        return unit;
+    };
     const auto& technos = TechnoClass::Array;
     if (technos.Count >= 0 && technos.Count <= 100000 &&
         (technos.Count == 0 || technos.Items))
@@ -189,23 +207,27 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot)
         for (int index = 0; index < technos.Count; ++index)
         {
             auto* techno = technos.Items[index];
-            if (!techno || !techno->IsAlive || !techno->IsOnMap || techno->InLimbo || techno->Health <= 0)
-                continue;
-            const auto playerIndex = playerIndices.find(techno->Owner);
-            if (playerIndex == playerIndices.end())
+            if (!techno || !techno->IsAlive || techno->Health <= 0)
                 continue;
             const auto* type = techno->GetTechnoType();
             if (!type)
+                continue;
+            // 历史成员按现有 UniqueID 匹配；不读 Group、不调用会维护 TargetIndex 的 As_Techno。
+            // 运输或部署中的存活成员仍可匹配，普通场上单位统计继续保留其原有过滤。
+            if (recordedIds.contains(techno->UniqueID))
+                resolvedGroupMembers.try_emplace(techno->UniqueID, describeUnit(techno, type));
+            if (!techno->IsOnMap || techno->InLimbo)
+                continue;
+            const auto playerIndex = playerIndices.find(techno->Owner);
+            if (playerIndex == playerIndices.end())
                 continue;
             const auto category = Category(techno->WhatAmI());
             const std::string id(type->ID, strnlen_s(type->ID, sizeof(type->ID)));
             auto& summary = summaries[playerIndex->second][{static_cast<int>(category), id}];
             if (summary.mCount == 0)
             {
-                summary.mTypeId = id;
-                summary.mName = TypeName(type);
-                summary.mCategory = category;
-                summary.mIcon = mImpl->mCameos.Resolve(type);
+                summary = describeUnit(techno, type);
+                summary.mCount = 0;
             }
             ++summary.mCount;
         }
@@ -213,5 +235,6 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot)
     for (std::size_t index = 0; index < summaries.size(); ++index)
         for (auto& [key, summary] : summaries[index])
             snapshot.mPlayers[index].mUnits.push_back(std::move(summary));
+    ProjectRecordedControlGroups(recordedGroups, resolvedGroupMembers, snapshot);
 }
 }

@@ -87,6 +87,9 @@ add_library(ReplayGameApi STATIC
     src/assets/ShroudPixels.cpp
     src/assets/IconLoadCache.cpp
     src/game_api/GameApi.cpp
+    src/game_api/control_groups/ControlGroupRecorder.cpp
+    src/game_api/control_groups/RecordedControlGroupProjection.cpp
+    src/game_api/native/NativeControlGroups.cpp
     src/game_api/ReplayWorldReader.cpp
     src/game_api/icons/CameoReader.cpp
     src/game_api/PlayerInputEffects.cpp
@@ -108,6 +111,7 @@ add_executable(ReplayHudD3D9Smoke tools/ReplayHudD3D9Smoke.cpp tools/ReplayHudDe
 target_link_libraries(ReplayHudD3D9Smoke PRIVATE ReplayGraphicsHooks d3d9)
 
 add_library(RAReplayPlugin SHARED
+    src/hooks/ControlGroupHooks.cpp
     src/hooks/MovementFeedbackHooks.cpp
     src/hooks/ReplayHooks.cpp
     src/hooks/ReplayPauseHooks.cpp
@@ -173,6 +177,12 @@ if(BUILD_TESTING)
     add_executable(RecordedControlGroupsTests tests/RecordedControlGroupsTests.cpp)
     target_link_libraries(RecordedControlGroupsTests PRIVATE ReplayDomain)
     add_test(NAME RecordedControlGroups COMMAND RecordedControlGroupsTests "${CMAKE_SOURCE_DIR}/tests/fixtures")
+
+    add_executable(ControlGroupCaptureTests tests/ControlGroupCaptureTests.cpp
+        src/game_api/control_groups/ControlGroupRecorder.cpp
+        src/game_api/control_groups/RecordedControlGroupProjection.cpp)
+    target_link_libraries(ControlGroupCaptureTests PRIVATE ReplayDomain)
+    add_test(NAME ControlGroupCapture COMMAND ControlGroupCaptureTests)
 
     add_executable(ReplaySessionTests tests/ReplaySessionTests.cpp)
     target_link_libraries(ReplaySessionTests PRIVATE ReplayDomain)

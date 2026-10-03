@@ -25,6 +25,11 @@ bool ReplaySession::StartRecording(IReplaySink& sink)
     {
         return FailRecording("First replay frame must be zero");
     }
+    if (info.mStreamVersion != 2 && info.mStreamVersion != 3)
+        return FailRecording("不支持此录制帧流版本");
+    mStreamVersion = info.mStreamVersion;
+    mCurrentGroups.reset();
+    mProcessedGroupUpdate.reset();
     mNextFrame = info.mFirstFrame;
     mState = ReplayState::Recording;
     mLastError.clear();
@@ -50,6 +55,8 @@ bool ReplaySession::StartPlayback(IReplaySource& source)
     {
         return FailPlayback("旧录影缺少玩家输入效果，请重新录制");
     }
+    if (recorded.mStreamVersion > 3)
+        return FailPlayback("不支持此播放帧流版本");
     if (recorded.mFirstFrame != 0 ||
         recorded.mGameMode != runtime.mGameMode ||
         recorded.mLocalHouseIndex != runtime.mLocalHouseIndex ||
@@ -83,6 +90,9 @@ bool ReplaySession::StartPlayback(IReplaySource& source)
         return FailPlayback(error);
     }
     mSource = &source;
+    mStreamVersion = recorded.mStreamVersion;
+    mCurrentGroups.reset();
+    mProcessedGroupUpdate.reset();
     mNextFrame = recorded.mFirstFrame;
     mState = ReplayState::Playing;
     mLastError.clear();
@@ -226,6 +236,11 @@ bool ReplaySession::OnFrameEnd()
             frameNumber != mLastProcessedFrame)
             return FailPlayback(error.empty() ? "Playback completed an unprocessed frame" : error);
         mLastCompletedFrame = frameNumber;
+        if (mProcessedGroupUpdate)
+        {
+            mCurrentGroups = std::move(mProcessedGroupUpdate);
+            mProcessedGroupUpdate.reset();
+        }
         mHasCompletedPlaybackFrame = true;
         return true;
     }
@@ -250,6 +265,12 @@ bool ReplaySession::OnFrameEnd()
     {
         return FailRecording("Recording frame exceeds the input effect limit");
     }
+    if (mStreamVersion == 3 &&
+        !mGame.CopyRecordedControlGroups(mPendingFrame.mRecordedGroups, error))
+        return FailRecording(error);
+    if (!ValidateRecordedControlGroups(mPendingFrame.mRecordedGroups,
+        mPendingFrame.mFrameNumber, mStreamVersion, error))
+        return FailRecording(error);
     if (!mSink->AppendFrame(mPendingFrame, error))
     {
         return FailRecording(error);
@@ -270,6 +291,8 @@ bool ReplaySession::PrefetchPlaybackFrame()
     const auto result = mSource->ReadFrame(frame, error);
     if (result == ReplayReadResult::End)
     {
+        if (mStreamVersion == 3 && mNextFrame == 0)
+            return FailPlayback("编队帧流缺少初始完整快照");
         mState = ReplayState::Ended;
         return true;
     }
@@ -279,6 +302,9 @@ bool ReplaySession::PrefetchPlaybackFrame()
         frame.mInputEffects.size() > FrameCodec::MAX_INPUT_EFFECTS_PER_FRAME)
         return FailPlayback(result == ReplayReadResult::Error ? error :
             "Playback frame record differs from current game frame");
+    if (!ValidateRecordedControlGroups(frame.mRecordedGroups, frame.mFrameNumber,
+        mStreamVersion, error))
+        return FailPlayback(error);
     mReadyFrame = std::move(frame);
     mHasReadyFrame = true;
     mHasAppliedInputEffects = false;
@@ -312,6 +338,11 @@ bool ReplaySession::IsPlaybackHeld() const noexcept
 std::uint32_t ReplaySession::GetLastCompletedFrame() const noexcept
 {
     return mLastCompletedFrame;
+}
+
+const std::optional<RecordedControlGroupSnapshot>& ReplaySession::GetRecordedControlGroups() const noexcept
+{
+    return mCurrentGroups;
 }
 
 bool ReplaySession::ProcessPlaybackFrame()
@@ -350,6 +381,7 @@ bool ReplaySession::ProcessPlaybackFrame()
         return true;
     }
     mLastProcessedFrame = frameNumber;
+    mProcessedGroupUpdate = std::move(mReadyFrame.mRecordedGroups);
     ++mNextFrame;
     mReadyFrame = {};
     mHasReadyFrame = false;
@@ -390,6 +422,8 @@ void ReplaySession::Stop()
     }
     mPendingFrame = {};
     mReadyFrame = {};
+    mCurrentGroups.reset();
+    mProcessedGroupUpdate.reset();
     mHasPendingFrame = false;
     mHasReadyFrame = false;
     mHasAppliedInputEffects = false;
@@ -422,6 +456,8 @@ bool ReplaySession::FailRecording(const std::string& error)
         mSink = nullptr;
     }
     mPendingFrame = {};
+    mCurrentGroups.reset();
+    mProcessedGroupUpdate.reset();
     mHasPendingFrame = false;
     mState = ReplayState::Failed;
     return false;
@@ -432,6 +468,8 @@ bool ReplaySession::FailPlayback(const std::string& error)
     mLastError = error.empty() ? "Replay playback failed" : error;
     mState = ReplayState::Failed;
     mReadyFrame = {};
+    mCurrentGroups.reset();
+    mProcessedGroupUpdate.reset();
     mHasReadyFrame = false;
     mHasAppliedInputEffects = false;
     EndPlayback();

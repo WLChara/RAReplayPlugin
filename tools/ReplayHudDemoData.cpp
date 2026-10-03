@@ -211,6 +211,7 @@ std::shared_ptr<viewer::ReplayViewSnapshot> CreateReplayHudDemoSnapshot(const Re
              MakeUnit("FV", "多功能步兵车", viewer::UnitCategory::Vehicle, 2, vehicleIcon)}},
         {2, {MakeUnit("HTNK", "灰熊坦克", viewer::UnitCategory::Vehicle, 4, vehicleIcon)}},
         {3, {MakeUnit("ORCA", "入侵者战机", viewer::UnitCategory::Aircraft, 3, aircraftIcon)}}};
+    snapshot->mRecordedGroups.front().mUnmatchedMemberCount = 1;
 
     snapshot->mRecordedFps.reserve(90);
     for (std::uint32_t index = 0; index < 90; ++index)

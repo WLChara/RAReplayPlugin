@@ -3,6 +3,7 @@
 #include "../replay/ReplayPorts.h"
 #include "PlayerInputEffects.h"
 #include "ViewerPlaybackSpeed.h"
+#include "control_groups/ControlGroupRecorder.h"
 
 
 namespace rareplay::game_api
@@ -11,6 +12,7 @@ namespace rareplay::game_api
 class GameApi final : public replay::IReplayGame
 {
 public:
+    GameApi();
     bool IsWorldReady() const;
     bool ReadSessionInfo(replay::ReplaySessionInfo& outInfo, std::string& error) override;
     bool ReadFrameContext(std::uint32_t& outFrameNumber, std::uint32_t& outChecksum,
@@ -18,6 +20,10 @@ public:
     bool CopyDueEvents(std::vector<replay::RecordedEvent>& outEvents, std::string& error) override;
     bool CopyPlayerInputEffects(std::vector<replay::RecordedInputEffect>& outEffects,
         std::string& error) override;
+    bool CopyRecordedControlGroups(std::optional<replay::RecordedControlGroupSnapshot>& outUpdate,
+        std::string& error) override;
+    bool RecordControlGroupUpdate(std::string& error);
+    ControlGroupCaptureStats GetControlGroupCaptureStats() const noexcept;
     bool ApplyPlayerInputEffects(const std::vector<replay::RecordedInputEffect>& effects,
         std::string& error) override;
     bool RecordPlayerInputEffect(const replay::RecordedInputEffect& effect,
@@ -45,6 +51,7 @@ private:
     void ProcessViewerCommands();
 
     PlayerInputEffects mPlayerInputEffects;
+    ControlGroupRecorder mControlGroupRecorder;
     ViewerPlaybackSpeed mViewerPlaybackSpeed;
     std::string mPlayerInputEffectsError;
     std::uint32_t mActiveFrame = 0;

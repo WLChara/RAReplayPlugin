@@ -17,7 +17,7 @@ void DrawRecordedGroups(const viewer::ReplayViewSnapshot& snapshot)
     ImGui::TextDisabled("仅显示该玩家的本地编队");
     if (!snapshot.mHasRecordedGroups)
     {
-        ImGui::TextDisabled("录制中没有编队数据");
+        ImGui::TextDisabled("此录像未记录编队历史");
         return;
     }
     if (snapshot.mRecordedGroups.empty())
@@ -30,7 +30,7 @@ void DrawRecordedGroups(const viewer::ReplayViewSnapshot& snapshot)
         ImGui::PushID(group.mNumber);
         ImGui::Separator();
         ImGui::TextColored(ImVec4(0.93f, 0.72f, 0.36f, 1.0f), "编队 %d", group.mNumber);
-        if (group.mUnits.empty())
+        if (group.mUnits.empty() && group.mUnmatchedMemberCount == 0)
         {
             ImGui::TextDisabled("无单位");
         }
@@ -42,6 +42,8 @@ void DrawRecordedGroups(const viewer::ReplayViewSnapshot& snapshot)
                 ImGui::BulletText("%s × %u", name, unit.mCount);
             }
         }
+        if (group.mUnmatchedMemberCount != 0)
+            ImGui::TextDisabled("未匹配成员：%u", group.mUnmatchedMemberCount);
         ImGui::PopID();
     }
 }

@@ -35,6 +35,9 @@ public:
     bool mApplyEffectsFails = false;
     int mApplyCount = 0;
     int mCopyEffectsCount = 0;
+    std::optional<RecordedControlGroupSnapshot> mGroupUpdate;
+    bool mCopyGroupsFails = false;
+    int mCopyGroupsCount = 0;
 
     bool ReadSessionInfo(ReplaySessionInfo& outInfo, std::string&) override
     {
@@ -80,6 +83,18 @@ public:
             return false;
         }
         mInputEffects = effects;
+        return true;
+    }
+    bool CopyRecordedControlGroups(std::optional<RecordedControlGroupSnapshot>& outUpdate,
+        std::string& error) override
+    {
+        ++mCopyGroupsCount;
+        if (mCopyGroupsFails)
+        {
+            error = "group capture failed";
+            return false;
+        }
+        outUpdate = mGroupUpdate;
         return true;
     }
     bool ExecuteReplayFrame(const ReplayFrame& frame, std::string& error) override
@@ -381,6 +396,142 @@ void TestPlaybackFailures()
             session.ProcessPlaybackFrame(), "engine CRC failure must not enter live network");
     }
 }
+
+void TestGroupRecordingPortAndFailure()
+{
+    FakeGame game;
+    game.mInfo.mStreamVersion = 3;
+    game.mGroupUpdate.emplace();
+    FakeSink sink;
+    ReplaySession session(game);
+    Require(session.StartRecording(sink) && session.OnFrameBegin() && session.OnFrameEnd() &&
+        sink.mFrames.size() == 1 && sink.mFrames[0].mRecordedGroups &&
+        sink.mFrames[0].mRecordedGroups->mMembers.empty() && game.mCopyGroupsCount == 1,
+        "v3 recording appends an explicit initial empty snapshot");
+    game.mFrame = 1;
+    game.mGroupUpdate = RecordedControlGroupSnapshot{{{0, 101, 52}}};
+    Require(session.OnFrameBegin() && session.OnFrameEnd() &&
+        sink.mFrames[1].mRecordedGroups == game.mGroupUpdate,
+        "group capture completes before frame append");
+    game.mFrame = 2;
+    game.mCopyGroupsFails = true;
+    Require(session.OnFrameBegin() && !session.OnFrameEnd() && sink.mAborted &&
+        sink.mFrames.size() == 2 && session.GetState() == ReplayState::Failed &&
+        game.mEndCount == 0 && session.GetLastError() == "group capture failed",
+        "group capture failure aborts recording without touching live simulation");
+
+    FakeGame missing;
+    missing.mInfo.mStreamVersion = 3;
+    FakeSink missingSink;
+    ReplaySession missingSession(missing);
+    Require(missingSession.StartRecording(missingSink) && missingSession.OnFrameBegin() &&
+        !missingSession.OnFrameEnd() && missingSink.mAborted && missingSink.mFrames.empty(),
+        "session validates missing initial snapshot even with a fake sink");
+
+    FakeGame legacy;
+    legacy.mCopyGroupsFails = true;
+    FakeSink legacySink;
+    ReplaySession legacySession(legacy);
+    Require(legacySession.StartRecording(legacySink) && legacySession.OnFrameBegin() &&
+        legacySession.OnFrameEnd() && legacy.mCopyGroupsCount == 0 &&
+        !legacySink.mFrames[0].mRecordedGroups, "v2 recording never calls new capture port");
+}
+
+void TestCompletedGroupHistoryAndPrefetch()
+{
+    FakeGame game;
+    FakeSource source;
+    source.mInfo.mStreamVersion = 3;
+    source.mFrames.resize(4);
+    for (std::size_t index = 0; index < source.mFrames.size(); ++index)
+        source.mFrames[index].mFrameNumber = static_cast<std::uint32_t>(index);
+    source.mFrames[0].mRecordedGroups.emplace();
+    source.mFrames[1].mRecordedGroups = RecordedControlGroupSnapshot{{{0, 101, 52}, {9, 202, 52}}};
+    source.mFrames[3].mRecordedGroups.emplace();
+    ReplaySession session(game);
+    Require(session.StartPlayback(source) && !session.GetRecordedControlGroups() &&
+        session.OnFrameBegin() && !session.GetRecordedControlGroups() &&
+        session.OnBeforeSimulation() && session.ProcessPlaybackFrame() &&
+        !session.GetRecordedControlGroups(), "prefetch and execution cannot publish initial groups early");
+    Require(session.OnFrameEnd() && session.GetRecordedControlGroups() &&
+        session.GetRecordedControlGroups()->mMembers.empty(), "initial empty history appears at frame end");
+    game.mFrame = 1;
+    Require(session.OnAfterFrameLoop() && session.OnAfterFrameLoop() && source.mReadCount == 2 &&
+        session.GetRecordedControlGroups()->mMembers.empty() && session.SetPaused(true),
+        "post-frame prefetch leaves previous history untouched");
+    for (int poll = 0; poll < 3; ++poll)
+        Require(session.OnFrameBegin() && session.OnBeforeSimulation() && session.ProcessPlaybackFrame() &&
+            session.GetRecordedControlGroups()->mMembers.empty(), "pause cannot apply next frame groups");
+    Require(session.SetPaused(false) && session.OnFrameBegin() && session.OnBeforeSimulation() &&
+        session.ProcessPlaybackFrame() && session.GetRecordedControlGroups()->mMembers.empty() &&
+        session.OnFrameEnd() && session.GetRecordedControlGroups() == source.mFrames[1].mRecordedGroups,
+        "group update is published only after successful full frame completion");
+    const auto members = session.GetRecordedControlGroups();
+    Require(session.OnFrameEnd() && session.GetRecordedControlGroups() == members,
+        "repeated frame-end notification is idempotent");
+    game.mFrame = 2;
+    Require(session.OnAfterFrameLoop() && session.OnFrameBegin() && session.OnBeforeSimulation() &&
+        session.ProcessPlaybackFrame() && session.OnFrameEnd() &&
+        session.GetRecordedControlGroups() == members, "missing update keeps previous group table");
+    game.mFrame = 3;
+    Require(session.OnAfterFrameLoop() && session.GetRecordedControlGroups() == members &&
+        session.OnFrameBegin() && session.OnBeforeSimulation() && session.ProcessPlaybackFrame() &&
+        session.GetRecordedControlGroups() == members && session.OnFrameEnd() &&
+        session.GetRecordedControlGroups() && session.GetRecordedControlGroups()->mMembers.empty(),
+        "empty present snapshot clears only at completion");
+    game.mFrame = 4;
+    Require(session.OnAfterFrameLoop() && session.GetState() == ReplayState::Ended &&
+        session.GetRecordedControlGroups() && session.GetRecordedControlGroups()->mMembers.empty() &&
+        game.mCopyGroupsCount == 0, "EOF retains final history and playback never captures live groups");
+    session.Stop();
+    Require(!session.GetRecordedControlGroups(), "stop resets group history");
+}
+
+void TestGroupPlaybackFailuresAndLegacy()
+{
+    for (const bool emptyStream : {false, true})
+    {
+        FakeGame game;
+        FakeSource source;
+        source.mInfo.mStreamVersion = 3;
+        if (!emptyStream) source.mFrames.resize(1);
+        ReplaySession session(game);
+        Require(session.StartPlayback(source) && !session.OnFrameBegin() &&
+            session.GetState() == ReplayState::Failed && !session.GetRecordedControlGroups() &&
+            game.mExecuted.empty(), "v3 empty stream or missing initial update fails before simulation");
+    }
+    FakeGame game;
+    FakeSource source;
+    source.mInfo.mStreamVersion = 3;
+    source.mFrames.resize(2);
+    source.mFrames[0].mRecordedGroups = RecordedControlGroupSnapshot{{{0, 101, 52}}};
+    source.mFrames[1].mFrameNumber = 1;
+    source.mFrames[1].mRecordedGroups = RecordedControlGroupSnapshot{{{9, 202, 52}}};
+    ReplaySession session(game);
+    Require(session.StartPlayback(source) && session.OnFrameBegin() && session.OnBeforeSimulation() &&
+        session.ProcessPlaybackFrame() && session.OnFrameEnd() && session.GetRecordedControlGroups(),
+        "first group frame completes");
+    game.mFrame = 1;
+    game.mExecutionFails = true;
+    Require(session.OnAfterFrameLoop() && session.OnFrameBegin() && session.OnBeforeSimulation() &&
+        session.ProcessPlaybackFrame() && session.GetState() == ReplayState::Failed &&
+        !session.GetRecordedControlGroups(), "execution failure resets history without partial update publication");
+
+    FakeGame legacy;
+    FakeSource oldSource;
+    oldSource.mFrames.resize(1);
+    ReplaySession oldSession(legacy);
+    Require(oldSession.StartPlayback(oldSource) && oldSession.OnFrameBegin() &&
+        oldSession.OnBeforeSimulation() && oldSession.ProcessPlaybackFrame() && oldSession.OnFrameEnd() &&
+        !oldSession.GetRecordedControlGroups(), "old v2 playback has no group history");
+    FakeGame injected;
+    FakeSource invalidSource;
+    invalidSource.mFrames.resize(1);
+    invalidSource.mFrames[0].mRecordedGroups.emplace();
+    ReplaySession invalidSession(injected);
+    Require(invalidSession.StartPlayback(invalidSource) && !invalidSession.OnFrameBegin() &&
+        injected.mExecuted.empty(), "v2 fake source cannot smuggle in group history");
+}
 }
 
 int main()
@@ -390,4 +541,7 @@ int main()
     TestPlaybackEndAndNoLiveFallback();
     TestPauseAndPrefetch();
     TestPlaybackFailures();
+    TestGroupRecordingPortAndFailure();
+    TestCompletedGroupHistoryAndPrefetch();
+    TestGroupPlaybackFailuresAndLegacy();
 }

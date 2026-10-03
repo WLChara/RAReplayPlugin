@@ -168,6 +168,18 @@ public:
         Fail(error);
     }
 
+    void CaptureControlGroupUpdate()
+    {
+        if (!IsRecordingActive())
+            return;
+        std::string error;
+        if (!mGame.RecordControlGroupUpdate(error))
+        {
+            mSession.Stop();
+            Fail(error);
+        }
+    }
+
     void CompleteFrame()
     {
         if (mIsStarted)
@@ -196,6 +208,14 @@ public:
 
     void Finish()
     {
+        if (mRequest.mMode == ReplayMode::Record && mIsStarted)
+        {
+            const auto stats = mGame.GetControlGroupCaptureStats();
+            const auto message = "Replay groups capture: nativeUpdates=" +
+                std::to_string(stats.mNativeUpdateCount) + " snapshotUpdates=" +
+                std::to_string(stats.mSnapshotUpdateCount);
+            Log(message.c_str());
+        }
         if (IsPlayback())
             mOverlayDiagnostics.Report(true);
         mViewPublisher.End();
@@ -285,7 +305,8 @@ private:
             controls.mCanRestart = mViewerChannel.CanRestart();
             controls.mRestartError = mRestartError;
             controls.mIsHalfShroudEnabled = mIsHalfShroudEnabled;
-            mViewPublisher.Publish(override, mGame.CanControlViewerPlaybackSpeed(), controls);
+            mViewPublisher.Publish(override, mGame.CanControlViewerPlaybackSpeed(), controls,
+                mSession.GetRecordedControlGroups());
         }
         catch (...)
         {
@@ -487,6 +508,12 @@ void OnPlayerInputEffectCaptureFailed() noexcept
         if (g_Runtime)
             g_Runtime->FailPlayerInputCapture("Unsupported movement feedback capture parameters");
     }
+    catch (...) { OnHookFailure(); }
+}
+
+void OnControlGroupUpdated() noexcept
+{
+    try { if (g_Runtime) g_Runtime->CaptureControlGroupUpdate(); }
     catch (...) { OnHookFailure(); }
 }
 

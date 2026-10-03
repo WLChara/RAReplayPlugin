@@ -17,6 +17,7 @@ void OnBeforeSimulation() noexcept;
 bool ShouldCapturePlayerInputEffect() noexcept;
 void OnPlayerInputEffectCaptured(const replay::RecordedInputEffect& effect) noexcept;
 void OnPlayerInputEffectCaptureFailed() noexcept;
+void OnControlGroupUpdated() noexcept;
 bool ShouldBlockPlayerCommands() noexcept;
 bool TrySetPlaybackViewingSpeed(int setting) noexcept;
 bool TryGetPlaybackViewingSpeed(int& outSetting) noexcept;

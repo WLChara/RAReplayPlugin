@@ -39,6 +39,8 @@ public:
     bool SetPaused(bool paused) noexcept;
     bool IsPlaybackHeld() const noexcept;
     std::uint32_t GetLastCompletedFrame() const noexcept;
+    /** 仅包含已完成帧的观看元数据；预取或执行中途的帧不会改变此值。 */
+    const std::optional<RecordedControlGroupSnapshot>& GetRecordedControlGroups() const noexcept;
     /** 播放开始后始终返回 true，要求调用方绕过真实网络路径。 */
     bool ProcessPlaybackFrame();
     bool Finish();
@@ -58,6 +60,9 @@ private:
     IReplaySink* mSink = nullptr;
     ReplayFrame mPendingFrame;
     ReplayFrame mReadyFrame;
+    std::optional<RecordedControlGroupSnapshot> mCurrentGroups;
+    std::optional<RecordedControlGroupSnapshot> mProcessedGroupUpdate;
+    std::uint32_t mStreamVersion = 2;
     std::uint64_t mNextFrame = 0;
     std::uint64_t mLastProcessedFrame = UINT64_MAX;
     ReplayState mState = ReplayState::Inactive;

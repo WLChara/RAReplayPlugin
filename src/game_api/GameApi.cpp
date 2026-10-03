@@ -2,6 +2,7 @@
 
 #include "native/NativeGame.h"
 #include "native/NativeShroud.h"
+#include "native/NativeControlGroups.h"
 
 // 此版 YRpp 的 ProdFailType 仍使用 Win32 的小写 byte 基类型。
 using byte = unsigned char;
@@ -24,6 +25,8 @@ static_assert(sizeof(EventClass) == 111);
 static_assert(offsetof(EventClass, Frame) == 3);
 }
 
+GameApi::GameApi() : mControlGroupRecorder(native::ReadRecordedControlGroups) {}
+
 bool GameApi::IsWorldReady() const
 {
     return Game::IsActive && ScenarioClass::Instance && HouseClass::CurrentPlayer &&
@@ -43,6 +46,7 @@ bool GameApi::ReadSessionInfo(replay::ReplaySessionInfo& outInfo, std::string& e
     outInfo.mFirstFrame = static_cast<std::uint32_t>(Unsorted::CurrentFrame);
     outInfo.mFrameSendRate = static_cast<std::uint32_t>(SessionClass::Instance.FrameSendRate);
     outInfo.mRandomSeed = static_cast<std::uint32_t>(Game::Seed);
+    outInfo.mStreamVersion = 3;
     error.clear();
     return true;
 }
@@ -112,6 +116,33 @@ bool GameApi::ApplyPlayerInputEffects(
         return false;
     }
     return PlayerInputEffects::Apply(effects, error);
+}
+
+bool GameApi::CopyRecordedControlGroups(
+    std::optional<replay::RecordedControlGroupSnapshot>& outUpdate, std::string& error)
+{
+    if (!mIsFrameActive || !IsWorldReady() ||
+        mActiveFrame != static_cast<std::uint32_t>(Unsorted::CurrentFrame))
+    {
+        error = "没有可提交编队数据的当前游戏帧";
+        return false;
+    }
+    return mControlGroupRecorder.CopyFrameUpdate(mActiveFrame, outUpdate, error);
+}
+
+bool GameApi::RecordControlGroupUpdate(std::string& error)
+{
+    if (!IsWorldReady())
+    {
+        error = "游戏世界未就绪，无法采集编队";
+        return false;
+    }
+    return mControlGroupRecorder.CaptureAfterNativeUpdate(error);
+}
+
+ControlGroupCaptureStats GameApi::GetControlGroupCaptureStats() const noexcept
+{
+    return mControlGroupRecorder.GetStats();
 }
 
 bool GameApi::RecordPlayerInputEffect(const replay::RecordedInputEffect& effect,
