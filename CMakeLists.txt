@@ -15,6 +15,9 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_compile_options(/utf-8 /W4 /permissive-)
 add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 
+add_library(ReplayCore STATIC src/core/encoding/Utf8.cpp)
+target_include_directories(ReplayCore PUBLIC src/core)
+
 # 仅使用 ImGui 核心和官方后端，不编译随库附带的旧 Hook 包装。
 add_library(ReplayImGui STATIC
     third_party/imgui/imgui.cpp
@@ -64,7 +67,7 @@ add_library(ReplayRender STATIC
     src/render/IconTextureCache.cpp
     src/render/OverlayInputQueue.cpp
     src/render/WglOverlayContext.cpp)
-target_link_libraries(ReplayRender PUBLIC ReplayUi)
+target_link_libraries(ReplayRender PUBLIC ReplayUi PRIVATE ReplayCore)
 target_link_libraries(ReplayHudPreview PRIVATE ReplayRender)
 
 add_library(ReplayDomain STATIC
@@ -91,6 +94,7 @@ add_library(ReplayGameApi STATIC
     src/game_api/control_groups/RecordedControlGroupProjection.cpp
     src/game_api/native/NativeControlGroups.cpp
     src/game_api/ReplayWorldReader.cpp
+    src/game_api/names/NativeDisplayNames.cpp
     src/game_api/icons/CameoReader.cpp
     src/game_api/PlayerInputEffects.cpp
     src/game_api/ViewerPlaybackSpeed.cpp
@@ -98,7 +102,7 @@ add_library(ReplayGameApi STATIC
 target_sources(ReplayGameApi PRIVATE src/game_api/native/NativeShroud.cpp)
 target_include_directories(ReplayGameApi PRIVATE third_party/yrpp)
 target_compile_definitions(ReplayGameApi PRIVATE SYR_VER=2)
-target_link_libraries(ReplayGameApi PUBLIC ReplayDomain)
+target_link_libraries(ReplayGameApi PUBLIC ReplayDomain PRIVATE ReplayCore)
 
 add_library(ReplayGraphicsHooks STATIC
     src/hooks/graphics/ReplayOverlayHook.cpp
@@ -146,6 +150,9 @@ target_link_libraries(ReplayProtocolBridge PRIVATE ReplayStorage)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(Utf8Tests tests/Utf8Tests.cpp)
+    target_link_libraries(Utf8Tests PRIVATE ReplayCore)
+    add_test(NAME Utf8 COMMAND Utf8Tests)
     add_executable(ShroudPixelsTests tests/ShroudPixelsTests.cpp src/assets/ShroudPixels.cpp)
     add_test(NAME ShroudPixels COMMAND ShroudPixelsTests)
     add_executable(ViewerControlChannelTests tests/ViewerControlChannelTests.cpp)

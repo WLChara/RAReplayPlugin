@@ -1,5 +1,7 @@
 #include "ReplayWorldReader.h"
 #include "icons/CameoReader.h"
+#include "names/NativeDisplayNames.h"
+#include "../core/encoding/Utf8.h"
 #include "control_groups/RecordedControlGroupProjection.h"
 
 using byte = unsigned char;
@@ -18,7 +20,6 @@ using byte = unsigned char;
 #include <TechnoTypeClass.h>
 #include <Unsorted.h>
 
-#include <Windows.h>
 #include <algorithm>
 #include <map>
 #include <stdexcept>
@@ -30,27 +31,6 @@ namespace rareplay::game_api
 {
 namespace
 {
-std::string Utf8(const wchar_t* text, std::size_t maxLength)
-{
-    if (!text)
-        return {};
-    const int length = static_cast<int>(wcsnlen_s(text, maxLength));
-    if (length <= 0)
-        return {};
-    const int bytes = WideCharToMultiByte(CP_UTF8, 0, text, length, nullptr, 0, nullptr, nullptr);
-    std::string result(static_cast<std::size_t>(bytes), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text, length, result.data(), bytes, nullptr, nullptr);
-    return result;
-}
-
-std::string TypeName(const AbstractTypeClass* type)
-{
-    if (!type)
-        return "未知类型";
-    auto name = Utf8(type->UIName, 256);
-    return name.empty() ? std::string(type->ID, strnlen_s(type->ID, sizeof(type->ID))) : name;
-}
-
 viewer::UnitCategory Category(AbstractType type)
 {
     switch (type)
@@ -108,9 +88,9 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
         SessionClass::Instance.GameMode == GameMode::Internet;
     if (ScenarioClass::Instance)
     {
-        snapshot.mMapName = Utf8(ScenarioClass::Instance->UINameLoaded, 0x2D);
+        snapshot.mMapName = core::encoding::Utf8(ScenarioClass::Instance->UINameLoaded, 0x2D);
         if (snapshot.mMapName.empty())
-            snapshot.mMapName = Utf8(ScenarioClass::Instance->Name, 0x2D);
+            snapshot.mMapName = core::encoding::Utf8(ScenarioClass::Instance->Name, 0x2D);
     }
 
     std::unordered_map<HouseClass*, std::size_t> playerIndices;
@@ -124,10 +104,10 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
             continue;
         viewer::PlayerSummary player;
         player.mHouseIndex = house->ArrayIndex;
-        player.mName = Utf8(house->UIName, 21);
+        player.mName = core::encoding::Utf8(house->UIName, 21);
         if (player.mName.empty())
             player.mName = "玩家 " + std::to_string(house->ArrayIndex + 1);
-        player.mFaction = TypeName(house->Type);
+        player.mFaction = ReadTypeDisplayName(house->Type);
         player.mColorRgb = (static_cast<std::uint32_t>(house->Color.R) << 16) |
             (static_cast<std::uint32_t>(house->Color.G) << 8) | house->Color.B;
         player.mIsHuman = house->IsHumanPlayer;
@@ -149,7 +129,7 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
         {
             const auto* building = buildings.Items[index];
             if (building && building->Factory && building->Type)
-                factoryLabels.try_emplace(building->Factory, TypeName(building->Type));
+                factoryLabels.try_emplace(building->Factory, ReadTypeDisplayName(building->Type));
         }
     }
 
@@ -172,7 +152,7 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
             const auto label = factoryLabels.find(const_cast<FactoryClass*>(factory));
             line.mLabel = label == factoryLabels.end() ? "生产线" : label->second;
             const auto* productType = factory->Object->GetTechnoType();
-            line.mProductName = TypeName(productType);
+            line.mProductName = ReadTypeDisplayName(productType);
             line.mIcon = mImpl->mCameos.Resolve(productType);
             line.mProgress = std::clamp(static_cast<float>(factory->Production.Value) / 54.0f, 0.0f, 1.0f);
             line.mReady = factory->Production.Value >= 54;
@@ -192,7 +172,7 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
     {
         viewer::UnitSummary unit;
         unit.mTypeId.assign(type->ID, strnlen_s(type->ID, sizeof(type->ID)));
-        unit.mName = TypeName(type);
+        unit.mName = ReadTypeDisplayName(type);
         unit.mCategory = Category(techno->WhatAmI());
         unit.mIcon = mImpl->mCameos.Resolve(type);
         unit.mCount = 1;

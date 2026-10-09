@@ -4,6 +4,8 @@
 
 插件通过 Syringe 加载，目标为 SHA-256 `7cd005d263fde203d9c84548200a057a8df61d724da3c6bd1e521eeb61cd0747` 的 `gamemd.exe`（ImageBase `0x400000`）。客户端负责生成录制或播放请求、检查地图并恢复开局文件；插件负责采集和重演模拟帧、读写回放容器以及显示观看界面。C# 接入范围与接入步骤见 [integrations/csharp/README.md](integrations/csharp/README.md)。
 
+`src/core/encoding` 提供通用的有界 UTF-16 → UTF-8 转换，公共接口仅使用标准类型，Win32 转换机制封装在实现内。`src/game_api/names` 负责读取游戏类型的 UIName 和内部 ID、应用显示名回退策略；游戏 SDK 类型保留在游戏适配层。
+
 ## 构建与测试
 
 需要 Windows、Visual Studio 2022 C++ 工作负载、Windows SDK、CMake 和 PowerShell。按 Win32/x86 与 C++23 构建：

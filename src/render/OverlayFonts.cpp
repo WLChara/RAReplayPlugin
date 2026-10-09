@@ -1,4 +1,5 @@
 #include "OverlayFonts.h"
+#include "../core/encoding/Utf8.h"
 
 #include "imgui.h"
 
@@ -9,22 +10,6 @@
 
 namespace rareplay::render
 {
-namespace
-{
-std::string ToUtf8(const std::wstring& wide)
-{
-    const int length = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (length <= 1)
-    {
-        return {};
-    }
-    std::string result(static_cast<std::size_t>(length), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, result.data(), length, nullptr, nullptr);
-    result.pop_back();
-    return result;
-}
-}
-
 bool LoadOverlayFont(ImGuiIO& io) noexcept
 {
     try
@@ -44,7 +29,7 @@ bool LoadOverlayFont(ImGuiIO& io) noexcept
                 {
                     continue;
                 }
-                const std::string utf8Path = ToUtf8(path);
+                const std::string utf8Path = core::encoding::Utf8(path.c_str(), path.size());
                 if (!utf8Path.empty() &&
                     io.Fonts->AddFontFromFileTTF(utf8Path.c_str(), 18.0f, nullptr,
                                                  io.Fonts->GetGlyphRangesChineseFull()) != nullptr)

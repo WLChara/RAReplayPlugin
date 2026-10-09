@@ -1,5 +1,32 @@
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+# Core 只提供通用能力；Win32 机制可以留在实现内，但不得进入公共头文件。
+$coreRoot = Join-Path $repo 'src/core'
+if (Test-Path -LiteralPath $coreRoot) {
+    $corePrefix = [IO.Path]::GetFullPath($coreRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    foreach ($file in (Get-ChildItem -LiteralPath $coreRoot -File -Recurse -Include '*.h','*.cpp')) {
+        $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+        foreach ($include in [regex]::Matches($content, '(?m)^\s*#\s*include\s*([<"])([^">]+)[">]')) {
+            $includePath = $include.Groups[2].Value
+            if ($includePath -eq 'Windows.h' -and $file.Extension -eq '.cpp') {
+                continue
+            } elseif ($include.Groups[1].Value -eq '"') {
+                $resolvedInclude = [IO.Path]::GetFullPath((Join-Path $file.DirectoryName $includePath))
+                if (-not $resolvedInclude.StartsWith($corePrefix, [StringComparison]::OrdinalIgnoreCase) -or
+                    -not (Test-Path -LiteralPath $resolvedInclude -PathType Leaf)) {
+                    throw "Core depends on another module: $($file.FullName): $includePath"
+                }
+            } elseif ($includePath -match '^(?:assert|ctype|errno|fenv|float|inttypes|iso646|limits|locale|math|setjmp|signal|stdalign|stdarg|stdbool|stddef|stdint|stdio|stdlib|stdnoreturn|string|time|uchar|wchar|wctype)\.h$') {
+                continue
+            } elseif ($includePath -match '(?i)[/\\]|\.h(?:pp)?$|imgui|kiero|MinHook|yrpp') {
+                throw "Core exposes or depends on an SDK/UI/platform header: $($file.FullName): $includePath"
+            }
+        }
+        if ($file.Extension -eq '.h' -and $content -match '\b(?:HANDLE|HWND|HDC|HMODULE|DWORD|UINT|WCHAR|LPWSTR|LPCWSTR|__stdcall|__fastcall|__thiscall)\b') {
+            throw "Core header exposes Win32 types or calling conventions: $($file.FullName)"
+        }
+    }
+}
 $hookFiles = Get-ChildItem -LiteralPath (Join-Path $repo 'src/hooks') -File -Include '*.cpp' -Recurse
 foreach ($file in $hookFiles) {
     $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
@@ -22,6 +49,9 @@ foreach ($file in $replayFiles) {
     if ($content -match $forbidden) { throw "ReplayDomain boundary violated: $($file.FullName)" }
 }
 $cmake = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repo 'CMakeLists.txt')
+if ($cmake -match '(?is)target_link_libraries\s*\(\s*ReplayCore\b[^)]*\b(?:Replay\w+|RAReplayPlugin)\b') {
+    throw 'ReplayCore depends on another project module'
+}
 if ($cmake -match '(?i)src/launcher|src/game/|NativeReplay|ReplayInitialize') {
     throw 'Obsolete launcher or native hook source remains in production CMake'
 }
