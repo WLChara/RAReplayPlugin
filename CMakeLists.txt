@@ -140,6 +140,10 @@ set_target_properties(SyringeHandshakeTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/handshake-smoke"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/build/handshake-smoke")
 
+# 由脚本先生成 C# 测试数据，再运行离线协议贯通；不注册为普通 CTest。
+add_executable(ReplayProtocolBridge tests/ProtocolBridge.cpp src/plugin/ReplayConfig.cpp)
+target_link_libraries(ReplayProtocolBridge PRIVATE ReplayStorage)
+
 include(CTest)
 if(BUILD_TESTING)
     add_executable(ShroudPixelsTests tests/ShroudPixelsTests.cpp src/assets/ShroudPixels.cpp)

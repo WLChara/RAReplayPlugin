@@ -37,30 +37,11 @@ Set-Content -LiteralPath $project -Value $projectText -Encoding UTF8
 if ($LASTEXITCODE -ne 0) { throw 'C# 协议测试辅助程序编译失败' }
 $csExe = Join-Path $csBuild 'bin/Release/net9.0/ProtocolBridge.dll'
 
-$vswhere = 'C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe'
-if (-not (Test-Path -LiteralPath $vswhere)) { throw '找不到 Visual Studio vswhere.exe' }
-$vsRoot = & $vswhere -latest -products '*' -property installationPath
-if (-not $vsRoot) { throw '找不到 Visual Studio 安装' }
-$vsDevCmd = Join-Path $vsRoot 'Common7/Tools/VsDevCmd.bat'
-$cppExe = Join-Path $cppBuild 'ProtocolBridge.exe'
-$cppSources = @(
-    (Join-Path $repo 'tests/ProtocolBridge.cpp'),
-    (Join-Path $repo 'src/plugin/ReplayConfig.cpp'),
-    (Join-Path $repo 'src/storage/FrameWriter.cpp'),
-    (Join-Path $repo 'src/storage/ReplayArchive.cpp'),
-    (Join-Path $repo 'src/replay/FrameCodec.cpp')
-)
-$quotedSources = ($cppSources | ForEach-Object { '"' + $_ + '"' }) -join ' '
-$command = 'call "' + $vsDevCmd + '" -arch=x86 >nul && cl /nologo /std:c++20 /W4 /WX /utf-8 /EHsc /Fe:"' +
-    $cppExe + '" ' + $quotedSources + ' /link bcrypt.lib'
-Push-Location $cppBuild
-try {
-    & cmd.exe /d /c $command
-    if ($LASTEXITCODE -ne 0) { throw 'C++ 协议测试辅助程序编译失败' }
-}
-finally {
-    Pop-Location
-}
+& cmake -S $repo -B $cppBuild -G 'Visual Studio 17 2022' -A Win32
+if ($LASTEXITCODE -ne 0) { throw 'C++ 协议测试辅助程序配置失败' }
+& cmake --build $cppBuild --target ReplayProtocolBridge --config Release --parallel
+if ($LASTEXITCODE -ne 0) { throw 'C++ 协议测试辅助程序编译失败' }
+$cppExe = Join-Path $cppBuild 'Release/ReplayProtocolBridge.exe'
 
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $tempDirectory = Join-Path $tempRoot ('rareplay-protocol-' + [guid]::NewGuid().ToString('N'))
