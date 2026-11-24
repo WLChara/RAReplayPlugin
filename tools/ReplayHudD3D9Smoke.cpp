@@ -1,5 +1,7 @@
 #include "ReplayHudDemoData.h"
 #include "../src/hooks/graphics/ReplayOverlayHook.h"
+#include "../src/render/D3D9OverlayRenderer.h"
+#include "../src/render/ReplayOverlayRenderer.h"
 #include "../src/viewer/ReplayViewExchange.h"
 #include "imgui.h"
 
@@ -12,6 +14,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <sstream>
@@ -87,10 +90,20 @@ void SaveAndVerify(IDirect3DDevice9* device, const std::filesystem::path& path)
     Require(output.good(), "Save DX9 smoke image");
 }
 
-void DrawPhase(IDirect3DDevice9* device, const std::filesystem::path& capture)
+// 发布带指定缩放档位的示例快照；宿主在下一帧发现档位变化即重建字体图集与设备对象。
+void PublishDemoWithScale(rareplay::viewer::HudScaleSetting scale)
+{
+    auto snapshot = rareplay::tools::CreateReplayHudDemoSnapshot({});
+    snapshot->mHudScaleSetting = scale;
+    rareplay::viewer::GetReplayViewExchange().Publish(std::move(snapshot));
+}
+
+void DrawPhase(IDirect3DDevice9* device, const std::filesystem::path& capture,
+               const std::function<void(int)>& beforeFrame)
 {
     for (int frame = 0; frame < 4; ++frame)
     {
+        beforeFrame(frame);
         Check(device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE), "Prepare render state");
         D3DVIEWPORT9 viewport{};
         Check(device->GetViewport(&viewport), "Read viewport");
@@ -147,9 +160,21 @@ int RunOpenGlHookSmoke()
     HGLRC context = wglCreateContext(dc);
     Require(context && wglMakeCurrent(dc, context), "Bind GL source context");
     Require(rareplay::hooks::EnsureReplayOverlayStarted(), "Arm both graphics APIs");
-    rareplay::viewer::GetReplayViewExchange().Publish(rareplay::tools::CreateReplayHudDemoSnapshot({}));
+    PublishDemoWithScale(rareplay::viewer::HudScaleSetting::Percent100);
+    auto& renderer = rareplay::render::GetReplayOverlayRenderer();
     for (int frame = 0; frame < 4; ++frame)
     {
+        // 第二帧后切到 175%，第三帧后切回自动（客户区 768 高解析为 100%），验证两次重建都能继续绘制。
+        if (frame == 2)
+        {
+            Require(renderer.GetAppliedHudScalePercent() == 100, "GL HUD starts at 100% font atlas");
+            PublishDemoWithScale(rareplay::viewer::HudScaleSetting::Percent175);
+        }
+        else if (frame == 3)
+        {
+            Require(renderer.GetAppliedHudScalePercent() == 175, "GL HUD rebuilt the font atlas at 175%");
+            PublishDemoWithScale(rareplay::viewer::HudScaleSetting::Auto);
+        }
         glViewport(0, 0, 1024, 768);
         glClearColor(0.03f, 0.04f, 0.03f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -162,6 +187,7 @@ int RunOpenGlHookSmoke()
     Require(info.mObservedBackend == rareplay::hooks::ReplayGraphicsBackend::OpenGL &&
         info.mOpenGlContextFrames == 4 && info.mRenderedFrames == 4 && info.mD3D9EndSceneCalls == 0,
         "Only actual GL callbacks select GL even with d3d9.dll loaded");
+    Require(renderer.GetAppliedHudScalePercent() == 100, "GL HUD restored the automatic 100% atlas");
     rareplay::viewer::GetReplayViewExchange().Clear();
     wglMakeCurrent(nullptr, nullptr);
     wglDeleteContext(context);
@@ -169,7 +195,7 @@ int RunOpenGlHookSmoke()
     DestroyWindow(window);
     std::cout << "OpenGL actual=OpenGL swaps=" << info.mOpenGlSwapCalls
         << " contextFrames=" << info.mOpenGlContextFrames << " drawn=" << info.mRenderedFrames
-        << "; loaded DX9 module did not choose backend\n";
+        << "; loaded DX9 module did not choose backend; HUD scale 100->175->auto(100) passed\n";
     return 0;
 }
 }
@@ -205,7 +231,7 @@ int wmain(int argc, wchar_t** argv)
         Require(rareplay::hooks::EnsureReplayOverlayStarted(), "Arm graphics hooks");
         _controlfp_s(&controlAfter, 0, 0);
         Require(controlBefore == controlAfter && mxcsr == _mm_getcsr(), "Hook probe must preserve game FPU controls");
-        rareplay::viewer::GetReplayViewExchange().Publish(rareplay::tools::CreateReplayHudDemoSnapshot({}));
+        PublishDemoWithScale(rareplay::viewer::HudScaleSetting::Percent100);
 
         std::promise<void> phaseOne, continueAfterReset, phaseTwo;
         auto first = phaseOne.get_future();
@@ -216,11 +242,27 @@ int wmain(int argc, wchar_t** argv)
             bool firstFinished = false;
             try
             {
-                DrawPhase(device, output);
+                auto& renderer = rareplay::render::GetD3D9OverlayRenderer();
+                // 第一阶段：100% 绘制两帧后切到 200%，最后一帧截图要求切档后仍正常绘制。
+                DrawPhase(device, output, [&renderer](int frame)
+                {
+                    if (frame == 2)
+                    {
+                        Require(renderer.GetAppliedHudScalePercent() == 100, "DX9 HUD starts at 100% font atlas");
+                        PublishDemoWithScale(rareplay::viewer::HudScaleSetting::Percent200);
+                    }
+                });
+                Require(renderer.GetAppliedHudScalePercent() == 200, "DX9 HUD rebuilt the font atlas at 200%");
                 phaseOne.set_value();
                 firstFinished = true;
                 resume.get();
-                DrawPhase(device, output.parent_path() / L"dx9-after-reset.bmp");
+                // 设备重置后切回自动：客户区 1024×768 应解析为 100%，并在重建的设备上恢复绘制。
+                DrawPhase(device, output.parent_path() / L"dx9-after-reset.bmp", [](int frame)
+                {
+                    if (frame == 0)
+                        PublishDemoWithScale(rareplay::viewer::HudScaleSetting::Auto);
+                });
+                Require(renderer.GetAppliedHudScalePercent() == 100, "DX9 HUD restored the automatic 100% atlas");
                 phaseTwo.set_value();
             }
             catch (...)
@@ -253,7 +295,8 @@ int wmain(int argc, wchar_t** argv)
         rareplay::viewer::GetReplayViewExchange().Clear();
         std::cout << "DX9 actual=Direct3D9 EndScene=" << diagnostics.mD3D9EndSceneCalls
             << " Present=" << diagnostics.mD3D9PresentCalls << " drawn=" << diagnostics.mRenderedFrames
-            << " failed=" << diagnostics.mRenderFailures << "; cross-thread Reset and scaled backbuffer passed\n";
+            << " failed=" << diagnostics.mRenderFailures
+            << "; cross-thread Reset, scaled backbuffer and HUD scale 100->200->auto(100) passed\n";
         device->Release();
         api->Release();
         DestroyWindow(window);

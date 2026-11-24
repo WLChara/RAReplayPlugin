@@ -173,7 +173,7 @@ void TestValidationAndTruncation()
     RejectBytes(absentWithCount);
     auto missingInitial = std::vector<std::uint8_t>(24, 0);
     RejectBytes(missingInitial);
-    RejectBytes(valid, 4);
+    RejectBytes(valid, 6);
     auto invalidV2Flag = std::vector<std::uint8_t>(20, 0);
     StoreU32(invalidV2Flag, 12, 2);
     RejectBytes(invalidV2Flag, 2);
@@ -206,17 +206,17 @@ void TestValidationAndTruncation()
     frame.mRecordedGroups.reset();
     Require(!FrameCodec::EncodeFrame(frame, valid, error, 3), "v3 requires initial snapshot");
     Require(!FrameCodec::EncodeFrame(frame, valid, error, 1), "v1 is read only");
-    Require(!FrameCodec::EncodeFrame(frame, valid, error, 4), "unknown write version fails");
+    Require(!FrameCodec::EncodeFrame(frame, valid, error, 6), "unknown write version fails");
 
     ReplaySessionInfo info;
     std::array<std::uint8_t, FrameCodec::HEADER_BYTES> header{};
-    for (const std::uint32_t version : {0U, 1U, 4U})
+    for (const std::uint32_t version : {0U, 1U, 6U})
     {
         info.mStreamVersion = version;
         Require(!FrameCodec::EncodeHeader(info, header, error), "invalid write header version fails");
     }
     auto headerBytes = EncodeFixture(3);
-    for (const std::uint32_t version : {0U, 4U})
+    for (const std::uint32_t version : {0U, 6U})
     {
         StoreU32(headerBytes, 4, version);
         stream = Input(headerBytes);

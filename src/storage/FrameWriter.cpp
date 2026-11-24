@@ -4,6 +4,8 @@
 
 namespace rareplay::storage
 {
+FrameWriter::FrameWriter(const ArchiveBlockPolicy& policy) : mArchive(policy) {}
+
 bool FrameWriter::Open(const std::wstring& path,
     const std::array<std::uint8_t, 32>& targetHash,
     const std::vector<std::uint8_t>& metadata,
@@ -23,8 +25,10 @@ bool FrameWriter::Open(const std::wstring& path,
         mHasFailed = true;
         return false;
     }
+    mFirstFrame = sessionInfo.mFirstFrame;
     mNextFrame = sessionInfo.mFirstFrame;
     mStreamVersion = sessionInfo.mStreamVersion;
+    mGameMode = sessionInfo.mGameMode;
     mIsOpen = true;
     error.clear();
     return true;
@@ -40,7 +44,9 @@ bool FrameWriter::AppendFrame(const replay::ReplayFrame& frame, std::string& err
         return false;
     }
     std::vector<std::uint8_t> bytes;
-    if (!replay::FrameCodec::EncodeFrame(frame, bytes, error, mStreamVersion) ||
+    // 与读取端相同的帧流级速度规则：写入端不产生读取端会拒绝的记录。
+    if (!replay::FrameCodec::ValidateGameSpeed(frame, mStreamVersion, mGameMode, error) ||
+        !replay::FrameCodec::EncodeFrame(frame, bytes, error, mStreamVersion) ||
         mArchive.Write(bytes.data(), static_cast<int>(bytes.size())) !=
             static_cast<int>(bytes.size()))
     {
@@ -58,7 +64,7 @@ bool FrameWriter::AppendFrame(const replay::ReplayFrame& frame, std::string& err
 
 bool FrameWriter::Finish(std::string& error)
 {
-    if (!mIsOpen || mHasFailed || (mStreamVersion == 3 && mNextFrame == 0))
+    if (!mIsOpen || mHasFailed || (mStreamVersion >= 3 && mNextFrame == 0))
     {
         error = "Replay writer is not finishable";
         return false;
@@ -76,9 +82,21 @@ bool FrameWriter::Finish(std::string& error)
 void FrameWriter::Abort() noexcept
 {
     mArchive.Abort();
+    mFirstFrame = 0;
     mNextFrame = 0;
     mStreamVersion = 2;
+    mGameMode = 0;
     mIsOpen = false;
     mHasFailed = false;
+}
+
+std::uint64_t FrameWriter::GetLogicalStreamBytes() const
+{
+    return static_cast<std::uint64_t>(mArchive.GetSize());
+}
+
+std::uint64_t FrameWriter::GetStoredStreamBytes() const
+{
+    return static_cast<std::uint64_t>(mArchive.GetStoredSize());
 }
 }

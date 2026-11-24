@@ -1,4 +1,4 @@
-#include "../src/plugin/ReplayConfig.h"
+#include "../src/storage/ReplayConfig.h"
 
 #include <array>
 #undef NDEBUG
@@ -44,28 +44,34 @@ int main()
 {
     constexpr std::int64_t NOW = 1'800'000'000'000;
     const auto bytes = MakeRequest(NOW, "C:\\replays\\\xE6\xB5\x8B\xE8\xAF\x95.rpl");
-    rareplay::plugin::ReplayRequest request;
+    rareplay::storage::ReplayRequest request;
     std::string error;
-    assert(rareplay::plugin::ParseReplayRequest(bytes, NOW, request, error));
-    assert(request.mMode == rareplay::plugin::ReplayMode::Play);
+    assert(rareplay::storage::ParseReplayRequest(bytes, NOW, request, error));
+    assert(request.mMode == rareplay::storage::ReplayMode::Play);
     assert(request.mReplayPath.filename() == L"测试.rpl");
+    // 播放路径不按后缀限制；遗留的未完成录像由容器头 flags 判定，而不是后缀。
+    const auto partialBytes = MakeRequest(NOW, "C:\\replays\\sample.yrrep.partial");
+    assert(rareplay::storage::ParseReplayRequest(partialBytes, NOW, request, error));
+    assert(request.mMode == rareplay::storage::ReplayMode::Play);
+    assert(request.mReplayPath.filename() == L"sample.yrrep.partial");
+    assert(rareplay::storage::ParseReplayRequest(bytes, NOW, request, error));
     const std::array<std::uint8_t, 3> archiveManifest{1, 2, 3};
-    assert(rareplay::plugin::MatchesArchiveManifest(request, archiveManifest));
+    assert(rareplay::storage::MatchesArchiveManifest(request, archiveManifest));
     request.mManifest.assign(archiveManifest.begin(), archiveManifest.end());
-    assert(rareplay::plugin::MatchesArchiveManifest(request, archiveManifest));
+    assert(rareplay::storage::MatchesArchiveManifest(request, archiveManifest));
     request.mManifest[1] = 4;
-    assert(!rareplay::plugin::MatchesArchiveManifest(request, archiveManifest));
+    assert(!rareplay::storage::MatchesArchiveManifest(request, archiveManifest));
 
     auto changed = bytes;
     changed[12] = 1;
-    assert(!rareplay::plugin::ParseReplayRequest(changed, NOW, request, error));
+    assert(!rareplay::storage::ParseReplayRequest(changed, NOW, request, error));
     changed = bytes;
     changed[48 + 11] = 0xFF;
-    assert(!rareplay::plugin::ParseReplayRequest(changed, NOW, request, error));
-    assert(!rareplay::plugin::ParseReplayRequest(bytes, NOW + 301'000, request, error));
+    assert(!rareplay::storage::ParseReplayRequest(changed, NOW, request, error));
+    assert(!rareplay::storage::ParseReplayRequest(bytes, NOW + 301'000, request, error));
     changed = bytes;
     changed[40] = 0xFF;
-    assert(!rareplay::plugin::ParseReplayRequest(changed, NOW, request, error));
+    assert(!rareplay::storage::ParseReplayRequest(changed, NOW, request, error));
 
     const auto path = std::filesystem::temp_directory_path() / L"rareplay-request-test.bin";
     {
@@ -74,7 +80,7 @@ int main()
     }
     changed = bytes;
     changed[24] ^= 1;
-    assert(!rareplay::plugin::ConsumeReplayRequest(path, changed, error));
+    assert(!rareplay::storage::ConsumeReplayRequest(path, changed, error));
     assert(std::filesystem::exists(path));
     std::filesystem::remove(path);
 }

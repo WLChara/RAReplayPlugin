@@ -22,3 +22,7 @@
 **/obj/
 *.user.config
 /local/
+/tests/*.exe
+
+# 跨语言测试用的合成样例录像需要纳入版本库。
+!/tests/fixtures/*.yrrep

@@ -31,6 +31,8 @@ public:
     OverlayInputQueue& GetInputQueue() noexcept { return mInputQueue; }
     void ResetInput() noexcept;
     bool IsDisabled() const noexcept { return mDisabled.load(std::memory_order_acquire); }
+    /** 诊断用：字体图集当前对应的 HUD 缩放百分比，尚未装载时为 0。任意线程可读。 */
+    int GetAppliedHudScalePercent() const noexcept { return mAppliedScalePercent.load(std::memory_order_acquire); }
 
 private:
     bool InitializeImGui(HWND window) noexcept;
@@ -52,6 +54,9 @@ private:
     bool mBackendInitialized = false;
     bool mVisible = true;
     bool mHasShownEnded = false;
+    // 渲染线程独占；图集在后端重建或换上下文时保留，只在档位变化时重建。
+    int mFontScalePercent = 0;
+    std::atomic<int> mAppliedScalePercent{0};
     std::atomic<bool> mDisabled{false};
 };
 

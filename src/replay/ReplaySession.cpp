@@ -25,9 +25,11 @@ bool ReplaySession::StartRecording(IReplaySink& sink)
     {
         return FailRecording("First replay frame must be zero");
     }
-    if (info.mStreamVersion != 2 && info.mStreamVersion != 3)
+    if (info.mStreamVersion < 2 || info.mStreamVersion > FrameCodec::LATEST_STREAM_VERSION)
         return FailRecording("不支持此录制帧流版本");
     mStreamVersion = info.mStreamVersion;
+    mGameMode = info.mGameMode;
+    mLastRecordedGameSpeed.reset();
     mCurrentGroups.reset();
     mProcessedGroupUpdate.reset();
     mNextFrame = info.mFirstFrame;
@@ -55,7 +57,7 @@ bool ReplaySession::StartPlayback(IReplaySource& source)
     {
         return FailPlayback("旧录影缺少玩家输入效果，请重新录制");
     }
-    if (recorded.mStreamVersion > 3)
+    if (recorded.mStreamVersion > FrameCodec::LATEST_STREAM_VERSION)
         return FailPlayback("不支持此播放帧流版本");
     if (recorded.mFirstFrame != 0 ||
         recorded.mGameMode != runtime.mGameMode ||
@@ -91,6 +93,10 @@ bool ReplaySession::StartPlayback(IReplaySource& source)
     }
     mSource = &source;
     mStreamVersion = recorded.mStreamVersion;
+    mGameMode = recorded.mGameMode;
+    mPlaybackGameSpeed.reset();
+    mInitialGameSpeedDifference.reset();
+    mHasCheckedInitialGameSpeed = false;
     mCurrentGroups.reset();
     mProcessedGroupUpdate.reset();
     mNextFrame = recorded.mFirstFrame;
@@ -160,6 +166,10 @@ bool ReplaySession::OnFrameBegin()
 
 bool ReplaySession::OnBeforeSimulation()
 {
+    if (mState == ReplayState::Recording)
+    {
+        return SampleRecordingGameSpeed();
+    }
     if (mState != ReplayState::Playing)
     {
         return mState != ReplayState::Failed;
@@ -185,12 +195,69 @@ bool ReplaySession::OnBeforeSimulation()
         return true;
     }
     std::string error;
-    if (!mGame.ApplyPlayerInputEffects(mReadyFrame.mInputEffects, error))
+    // 速度先于输入效果写回：重演的 MoveFlash 动画构造会经 GetAnimSpeed 读取速度。
+    if (!ApplyRecordedGameSpeed(error) ||
+        !mGame.ApplyPlayerInputEffects(mReadyFrame.mInputEffects, error))
     {
         return FailPlayback(error);
     }
     mHasAppliedInputEffects = true;
     return true;
+}
+
+bool ReplaySession::SampleRecordingGameSpeed()
+{
+    // 只有 v4 起（含 v5）的单机帧流记录速度；联机、旧版本或本帧没有待提交记录时不读取任何游戏状态。
+    if (!mHasPendingFrame || !FrameCodec::CarriesGameSpeed(mStreamVersion, mGameMode))
+    {
+        return true;
+    }
+    std::uint32_t frameNumber = 0;
+    std::uint32_t ignoredChecksum = 0;
+    bool ignoredHasChecksum = false;
+    std::string error;
+    if (!mGame.ReadFrameContext(frameNumber, ignoredChecksum, ignoredHasChecksum, error) ||
+        frameNumber != mPendingFrame.mFrameNumber)
+    {
+        return FailRecording(error.empty() ? "Game speed sampling frame changed" : error);
+    }
+    std::int32_t speed = 0;
+    if (!mGame.ReadGameSpeed(speed, error))
+    {
+        return FailRecording(error);
+    }
+    if (speed < 0 || static_cast<std::uint32_t>(speed) > FrameCodec::MAX_GAME_SPEED)
+    {
+        return FailRecording("录制时游戏速度超出 0..6：frame=" + std::to_string(frameNumber) +
+            " speed=" + std::to_string(speed));
+    }
+    // 单机局内调速只发生在帧间，本帧所有模拟读取都看到这个值。首帧必写，之后只在变化时写；
+    // 同一帧重复进入时以最后一次采样为准。
+    const auto value = static_cast<std::uint32_t>(speed);
+    if (mLastRecordedGameSpeed == value)
+        mPendingFrame.mGameSpeed.reset();
+    else
+        mPendingFrame.mGameSpeed = value;
+    return true;
+}
+
+bool ReplaySession::ApplyRecordedGameSpeed(std::string& error)
+{
+    if (mReadyFrame.mGameSpeed)
+        mPlaybackGameSpeed = mReadyFrame.mGameSpeed;
+    // v1–3 与联机录像没有速度字段，从不写回。
+    if (!mPlaybackGameSpeed)
+        return true;
+    if (mReadyFrame.mFrameNumber == 0 && !mHasCheckedInitialGameSpeed)
+    {
+        mHasCheckedInitialGameSpeed = true;
+        std::int32_t current = 0;
+        if (!mGame.ReadGameSpeed(current, error))
+            return false;
+        if (current < 0 || static_cast<std::uint32_t>(current) != *mPlaybackGameSpeed)
+            mInitialGameSpeedDifference = GameSpeedDifference{*mPlaybackGameSpeed, current};
+    }
+    return mGame.ApplyGameSpeed(*mPlaybackGameSpeed, error);
 }
 
 bool ReplaySession::OnBeforeEvents()
@@ -221,6 +288,34 @@ bool ReplaySession::OnBeforeEvents()
     mPendingFrame.mHasChecksum = hasChecksum;
     mPendingFrame.mEvents = std::move(events);
     mHasCopiedEvents = true;
+    return true;
+}
+
+bool ReplaySession::OnEventDispatched(const RecordedEvent& event)
+{
+    if (mState != ReplayState::Recording)
+    {
+        return mState != ReplayState::Failed;
+    }
+    // 入口快照会整体替换本帧事件；分派早于入口说明阶段错乱，继续追加会丢失或重复命令。
+    if (!mHasPendingFrame || !mHasCopiedEvents)
+    {
+        return FailRecording("Event dispatched outside the recording event phase");
+    }
+    std::uint32_t frameNumber = 0;
+    std::uint32_t checksum = 0;
+    bool hasChecksum = false;
+    std::string error;
+    if (!mGame.ReadFrameContext(frameNumber, checksum, hasChecksum, error) ||
+        frameNumber != mPendingFrame.mFrameNumber)
+    {
+        return FailRecording(error.empty() ? "Event dispatch frame changed" : error);
+    }
+    if (mPendingFrame.mEvents.size() >= FrameCodec::MAX_EVENTS_PER_FRAME)
+    {
+        return FailRecording("Recording frame exceeds the event limit");
+    }
+    mPendingFrame.mEvents.push_back(event);
     return true;
 }
 
@@ -265,16 +360,21 @@ bool ReplaySession::OnFrameEnd()
     {
         return FailRecording("Recording frame exceeds the input effect limit");
     }
-    if (mStreamVersion == 3 &&
+    if (mStreamVersion >= 3 &&
         !mGame.CopyRecordedControlGroups(mPendingFrame.mRecordedGroups, error))
         return FailRecording(error);
     if (!ValidateRecordedControlGroups(mPendingFrame.mRecordedGroups,
         mPendingFrame.mFrameNumber, mStreamVersion, error))
         return FailRecording(error);
+    // 例如本帧没有经过模拟前采样时，单机帧流第 0 帧会缺少速度；提交前按读取端规则拒绝。
+    if (!FrameCodec::ValidateGameSpeed(mPendingFrame, mStreamVersion, mGameMode, error))
+        return FailRecording(error);
     if (!mSink->AppendFrame(mPendingFrame, error))
     {
         return FailRecording(error);
     }
+    if (mPendingFrame.mGameSpeed)
+        mLastRecordedGameSpeed = mPendingFrame.mGameSpeed;
     ++mNextFrame;
     mPendingFrame = {};
     mHasPendingFrame = false;
@@ -291,7 +391,7 @@ bool ReplaySession::PrefetchPlaybackFrame()
     const auto result = mSource->ReadFrame(frame, error);
     if (result == ReplayReadResult::End)
     {
-        if (mStreamVersion == 3 && mNextFrame == 0)
+        if (mStreamVersion >= 3 && mNextFrame == 0)
             return FailPlayback("编队帧流缺少初始完整快照");
         mState = ReplayState::Ended;
         return true;
@@ -303,7 +403,8 @@ bool ReplaySession::PrefetchPlaybackFrame()
         return FailPlayback(result == ReplayReadResult::Error ? error :
             "Playback frame record differs from current game frame");
     if (!ValidateRecordedControlGroups(frame.mRecordedGroups, frame.mFrameNumber,
-        mStreamVersion, error))
+        mStreamVersion, error) ||
+        !FrameCodec::ValidateGameSpeed(frame, mStreamVersion, mGameMode, error))
         return FailPlayback(error);
     mReadyFrame = std::move(frame);
     mHasReadyFrame = true;
@@ -345,6 +446,13 @@ const std::optional<RecordedControlGroupSnapshot>& ReplaySession::GetRecordedCon
     return mCurrentGroups;
 }
 
+std::optional<GameSpeedDifference> ReplaySession::TakeInitialGameSpeedDifference() noexcept
+{
+    auto difference = mInitialGameSpeedDifference;
+    mInitialGameSpeedDifference.reset();
+    return difference;
+}
+
 bool ReplaySession::ProcessPlaybackFrame()
 {
     if (!mWasPlayback)
@@ -381,6 +489,8 @@ bool ReplaySession::ProcessPlaybackFrame()
         return true;
     }
     mLastProcessedFrame = frameNumber;
+    if (mFrameObserver != nullptr)
+        mFrameObserver->OnPlaybackFrameExecuted(mReadyFrame);
     mProcessedGroupUpdate = std::move(mReadyFrame.mRecordedGroups);
     ++mNextFrame;
     mReadyFrame = {};
@@ -424,6 +534,9 @@ void ReplaySession::Stop()
     mReadyFrame = {};
     mCurrentGroups.reset();
     mProcessedGroupUpdate.reset();
+    mLastRecordedGameSpeed.reset();
+    mPlaybackGameSpeed.reset();
+    mInitialGameSpeedDifference.reset();
     mHasPendingFrame = false;
     mHasReadyFrame = false;
     mHasAppliedInputEffects = false;
@@ -458,6 +571,7 @@ bool ReplaySession::FailRecording(const std::string& error)
     mPendingFrame = {};
     mCurrentGroups.reset();
     mProcessedGroupUpdate.reset();
+    mLastRecordedGameSpeed.reset();
     mHasPendingFrame = false;
     mState = ReplayState::Failed;
     return false;
@@ -470,6 +584,8 @@ bool ReplaySession::FailPlayback(const std::string& error)
     mReadyFrame = {};
     mCurrentGroups.reset();
     mProcessedGroupUpdate.reset();
+    // 第 0 帧速度差异保留到调用方取出，失败前发现的差异仍会记日志。
+    mPlaybackGameSpeed.reset();
     mHasReadyFrame = false;
     mHasAppliedInputEffects = false;
     EndPlayback();

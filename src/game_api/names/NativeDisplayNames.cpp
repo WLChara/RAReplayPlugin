@@ -9,12 +9,21 @@ using byte = unsigned char;
 
 namespace rareplay::game_api
 {
+namespace
+{
+constexpr std::size_t MAX_UI_NAME_CODE_UNITS = 256;
+}
+
+std::string ReadTypeUiName(const AbstractTypeClass* type)
+{
+    return type ? core::encoding::Utf8(type->UIName, MAX_UI_NAME_CODE_UNITS) : std::string();
+}
+
 std::string ReadTypeDisplayName(const AbstractTypeClass* type)
 {
     if (!type)
         return "未知类型";
-    constexpr std::size_t MAX_UI_NAME_CODE_UNITS = 256;
-    auto name = core::encoding::Utf8(type->UIName, MAX_UI_NAME_CODE_UNITS);
+    auto name = ReadTypeUiName(type);
     return name.empty() ? std::string(type->ID, strnlen_s(type->ID, sizeof(type->ID))) : name;
 }
 }

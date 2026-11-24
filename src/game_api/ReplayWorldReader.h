@@ -1,5 +1,6 @@
 #pragma once
 
+#include "icons/IconStats.h"
 #include "../viewer/ReplayViewModel.h"
 #include "../replay/RecordedControlGroups.h"
 
@@ -9,16 +10,6 @@
 
 namespace rareplay::game_api
 {
-struct IconStats
-{
-    std::uint32_t mPcx = 0;
-    std::uint32_t mShp = 0;
-    std::uint32_t mMissing = 0;
-    std::uint32_t mInvalidSurface = 0;
-    std::uint32_t mCacheLimit = 0;
-    std::string mRecentDetail;
-};
-
 /** 由一个播放会话持有；只在游戏线程采样，向视图复制值而不传递 SDK 指针。 */
 class ReplayWorldReader final
 {

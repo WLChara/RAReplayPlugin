@@ -1,4 +1,6 @@
 #include "ReplayWorldReader.h"
+#include "HouseRoster.h"
+#include "NativeSidebar.h"
 #include "icons/CameoReader.h"
 #include "names/NativeDisplayNames.h"
 #include "../core/encoding/Utf8.h"
@@ -14,8 +16,6 @@ using byte = unsigned char;
 #include <HouseTypeClass.h>
 #include <ScenarioClass.h>
 #include <SessionClass.h>
-#include <SidebarClass.h>
-#include <Surface.h>
 #include <TechnoClass.h>
 #include <TechnoTypeClass.h>
 #include <Unsorted.h>
@@ -68,22 +68,9 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
     mImpl->mCameos.BeginSample();
     snapshot.mFrameNumber = static_cast<std::uint32_t>(Unsorted::CurrentFrame);
     snapshot.mPlaybackSpeedSetting = GameOptionsClass::Instance.GameSpeed;
-    const auto& window = DSurface::WindowBounds;
-    const auto& sidebar = SidebarClass::Instance;
-    const int tabIndex = std::clamp(sidebar.ActiveTabIndex, 0, 3);
-    int contentTop = sidebar.Tabs[tabIndex].Location.Y - window.Y;
-    const bool hasBuildBoundary = contentTop > 0 && contentTop < window.Height;
-    // 149C 是 Sidebar surface 内的小地图内容框；Strip 起点同时保护其边框及上侧栏。
-    const auto& radar = sidebar.unknown_rect_149C;
-    const auto& sidebarBounds = DSurface::SidebarBounds;
-    if (radar.Height > 0 && radar.Height <= window.Height)
-    {
-        const auto radarBottom = static_cast<std::int64_t>(sidebarBounds.Y) + radar.Y + radar.Height - window.Y;
-        if (radarBottom > 0 && radarBottom < window.Height)
-            contentTop = std::max(contentTop, static_cast<int>(radarBottom));
-    }
-    if (hasBuildBoundary && window.Width > 0 && window.Height > 0 && contentTop > 0 && contentTop < window.Height)
-        snapshot.mNativeUiLayout = viewer::NativeUiLayout{window.Width, window.Height, contentTop};
+    // 面板直接占用 SidebarBounds；雷达块与资金条在其上方，均为不随分辨率缩放的常量布局。
+    snapshot.mNativeUiLayout = ReadNativeUiLayout();
+    snapshot.mIsNativeRadarAvailable = IsNativeRadarAvailable();
     snapshot.mWasNetworkGame = SessionClass::Instance.GameMode == GameMode::LAN ||
         SessionClass::Instance.GameMode == GameMode::Internet;
     if (ScenarioClass::Instance)
@@ -94,22 +81,15 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
     }
 
     std::unordered_map<HouseClass*, std::size_t> playerIndices;
-    const auto& houses = HouseClass::Array;
-    if (houses.Count < 0 || houses.Count > 64 || (houses.Count > 0 && !houses.Items))
-        throw std::runtime_error("Invalid House array during replay HUD sampling");
-    for (int index = 0; index < houses.Count; ++index)
+    for (HouseClass* house : GetValidatedHouseArray())
     {
-        auto* house = houses.Items[index];
-        if (!house || !house->Type || house->Type->MultiplayPassive)
+        if (!IsParticipatingHouse(house))
             continue;
         viewer::PlayerSummary player;
         player.mHouseIndex = house->ArrayIndex;
-        player.mName = core::encoding::Utf8(house->UIName, 21);
-        if (player.mName.empty())
-            player.mName = "玩家 " + std::to_string(house->ArrayIndex + 1);
+        player.mName = ReadHouseDisplayName(house);
         player.mFaction = ReadTypeDisplayName(house->Type);
-        player.mColorRgb = (static_cast<std::uint32_t>(house->Color.R) << 16) |
-            (static_cast<std::uint32_t>(house->Color.G) << 8) | house->Color.B;
+        player.mColorRgb = ReadHouseColorRgb(house);
         player.mIsHuman = house->IsHumanPlayer;
         player.mDefeated = house->Defeated;
         // 此 const 查询包含可用矿石价值；直接读取 Balance 会少算可花费资金。
@@ -120,6 +100,8 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
         snapshot.mPlayers.push_back(std::move(player));
     }
 
+    // 生产中的对象不算部队：各工厂的 Object 在统计部队总数时排除。
+    std::unordered_set<const TechnoClass*> factoryObjects;
     std::unordered_map<FactoryClass*, std::string> factoryLabels;
     const auto& buildings = BuildingClass::Array;
     if (buildings.Count >= 0 && buildings.Count <= 100000 &&
@@ -144,6 +126,7 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
             const auto* factory = factories.Items[index];
             if (!factory || !factory->Object)
                 continue;
+            factoryObjects.insert(factory->Object);
             const auto playerIndex = playerIndices.find(factory->Owner);
             if (playerIndex == playerIndices.end())
                 continue;
@@ -178,6 +161,7 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
         unit.mCount = 1;
         return unit;
     };
+    std::vector<std::uint32_t> unitTotals(snapshot.mPlayers.size(), 0);
     const auto& technos = TechnoClass::Array;
     if (technos.Count >= 0 && technos.Count <= 100000 &&
         (technos.Count == 0 || technos.Items))
@@ -192,6 +176,18 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
             const auto* type = techno->GetTechnoType();
             if (!type)
                 continue;
+            // 部队总数：步兵、载具、飞机，含矿车，不含建筑；在场上，或被运输工具载着（Transporter 非空）；
+            // 排除生产中的对象。这与下面按类型汇总的“场上单位”过滤不同，所以在它之前单独计数。
+            // 先做便宜的类别与位置判断，再查玩家表与生产对象集，避免对建筑和未部署对象做哈希查找。
+            const auto kind = Category(techno->WhatAmI());
+            const bool isMobile = kind == viewer::UnitCategory::Infantry ||
+                kind == viewer::UnitCategory::Vehicle || kind == viewer::UnitCategory::Aircraft;
+            if (isMobile && ((techno->IsOnMap && !techno->InLimbo) || techno->Transporter != nullptr))
+            {
+                const auto owner = playerIndices.find(techno->Owner);
+                if (owner != playerIndices.end() && !factoryObjects.contains(techno))
+                    ++unitTotals[owner->second];
+            }
             // 历史成员按现有 UniqueID 匹配；不读 Group、不调用会维护 TargetIndex 的 As_Techno。
             // 运输或部署中的存活成员仍可匹配，普通场上单位统计继续保留其原有过滤。
             if (recordedIds.contains(techno->UniqueID))
@@ -213,8 +209,12 @@ void ReplayWorldReader::Read(viewer::ReplayViewSnapshot& snapshot,
         }
     }
     for (std::size_t index = 0; index < summaries.size(); ++index)
+    {
         for (auto& [key, summary] : summaries[index])
             snapshot.mPlayers[index].mUnits.push_back(std::move(summary));
+        if (snapshot.mPlayers[index].mHasUnitData)
+            snapshot.mPlayers[index].mUnitTotal = unitTotals[index];
+    }
     ProjectRecordedControlGroups(recordedGroups, resolvedGroupMembers, snapshot);
 }
 }

@@ -5,7 +5,7 @@
 
 namespace rareplay::ui::detail
 {
-void DrawFpsCard(const viewer::ReplayViewSnapshot& snapshot)
+void DrawFpsCard(const viewer::ReplayViewSnapshot& snapshot, float scale)
 {
     ImGui::TextUnformatted("录制帧率");
     if (snapshot.mIsPreview)
@@ -15,7 +15,7 @@ void DrawFpsCard(const viewer::ReplayViewSnapshot& snapshot)
     if (snapshot.mRecordedFps.empty())
     {
         ImGui::TextDisabled("录制 FPS：无数据");
-        ImGui::Dummy(ImVec2(0.0f, 45.0f));
+        ImGui::Dummy(ImVec2(0.0f, 45.0f * scale));
     }
     else
     {
@@ -33,7 +33,7 @@ void DrawFpsCard(const viewer::ReplayViewSnapshot& snapshot)
         }
         ImGui::Text("录制 FPS：%.1f", values.back());
         ImGui::PlotLines("##录制帧率曲线", values.data(), static_cast<int>(values.size()),
-                         0, nullptr, 0.0f, maximumFps * 1.1f, ImVec2(-1.0f, 47.0f));
+                         0, nullptr, 0.0f, maximumFps * 1.1f, ImVec2(-1.0f, 47.0f * scale));
         ImGui::TextDisabled("录像帧 %u–%u", snapshot.mRecordedFps[firstSample].mFrameNumber,
                             snapshot.mRecordedFps.back().mFrameNumber);
     }

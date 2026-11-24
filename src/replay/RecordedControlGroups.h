@@ -30,7 +30,7 @@ struct RecordedControlGroupSnapshot
 };
 
 /**
- * 验证帧的编队元数据。v3 第 0 帧必须有快照；空快照清空全部编队，
+ * 验证帧的编队元数据。v3 起（含 v4、v5）第 0 帧必须有快照；空快照清空全部编队，
  * 缺失快照表示沿用前帧。v1/v2 不得携带编队数据。失败时返回 false。
  */
 bool ValidateRecordedControlGroups(

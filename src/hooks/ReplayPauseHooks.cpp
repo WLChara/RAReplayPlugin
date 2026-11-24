@@ -1,4 +1,4 @@
-#include "../game_api/GameApi.h"
+#include "../game_api/native/NativeGame.h"
 #include "../plugin/ReplayRuntime.h"
 #include "../target/TargetAbi.h"
 
@@ -6,6 +6,7 @@
 
 // 完整 CALL DrawOnTop：ECX 是 MouseClass，无栈参数。正常分支显式原调用。
 // 输入已处理；暂停复用原生消息、绘制和节流分支，不进入任何模拟阶段。
+// 快进中不画的帧（ContinueWithoutDraw）只跳过这次 DrawOnTop，续点与 Continue 相同；需要完整重绘时运行时已在返回前请求。
 DEFINE_HOOK(0x55D8F2, ReplayViewerLoopGateHook, 5)
 {
     const auto action = rareplay::plugin::OnViewerLoopGate();
@@ -13,7 +14,8 @@ DEFINE_HOOK(0x55D8F2, ReplayViewerLoopGateHook, 5)
         return static_cast<DWORD>(rareplay::target::VIEWER_EXIT_LOOP);
     if (action == rareplay::plugin::ViewerLoopAction::Hold)
         return static_cast<DWORD>(rareplay::target::VIEWER_HELD_LOOP);
-    rareplay::game_api::GameApi::DrawViewerOnTop();
+    if (action != rareplay::plugin::ViewerLoopAction::ContinueWithoutDraw)
+        rareplay::game_api::native::DrawViewerOnTop();
     return static_cast<DWORD>(rareplay::target::VIEWER_LOOP_CONTINUE);
 }
 
@@ -22,6 +24,6 @@ DEFINE_HOOK(0x55D8F2, ReplayViewerLoopGateHook, 5)
 DEFINE_HOOK(0x48CE9C, ReplayAfterFrameLoopHook, 5)
 {
     if (!rareplay::plugin::OnAfterFrameLoop())
-        rareplay::game_api::GameApi::ProcessGameOver();
+        rareplay::game_api::native::ProcessGameOver();
     return static_cast<DWORD>(rareplay::target::GAME_OVER_CONTINUE);
 }

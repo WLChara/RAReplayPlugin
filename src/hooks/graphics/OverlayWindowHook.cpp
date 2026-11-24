@@ -4,6 +4,7 @@
 #include "../../viewer/ReplayViewExchange.h"
 
 #include <atomic>
+#include <cstdint>
 
 namespace rareplay::hooks
 {
@@ -13,6 +14,19 @@ std::atomic<HWND> g_Window{nullptr};
 std::atomic<WNDPROC> g_Original{nullptr};
 std::atomic<render::OverlayInputQueue*> g_Input{nullptr};
 std::atomic<render::OverlayInputQueue*> g_RetiredInput{nullptr};
+
+// Ctrl+滚轮累积出的档数以当前快照的会话 ID 提交，过期会话的命令由游戏线程丢弃；锚点由游戏线程应用时读取鼠标位置。
+void SubmitBattlefieldZoomSteps(std::uint64_t sessionId, int steps) noexcept
+{
+    try
+    {
+        viewer::GetReplayViewExchange().Submit({sessionId, viewer::ViewerCommandKind::AdjustBattlefieldZoom, steps});
+    }
+    catch (...)
+    {
+        // 命令队列分配失败只丢掉这几档；消息照常被吞掉，不交给游戏。
+    }
+}
 
 LRESULT CALLBACK OverlayWndProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -29,7 +43,10 @@ LRESULT CALLBACK OverlayWndProc(HWND window, UINT message, WPARAM wParam, LPARAM
             const auto snapshot = viewer::GetReplayViewExchange().Read();
             if (message == WM_NCDESTROY || !snapshot || !snapshot->mActive)
                 input->Clear();
-            if (input->RouteMessage(window, message, wParam, lParam))
+            const bool isConsumed = input->RouteMessage(window, message, wParam, lParam);
+            if (const int zoomSteps = input->TakeBattlefieldZoomSteps(); zoomSteps != 0 && snapshot && snapshot->mActive)
+                SubmitBattlefieldZoomSteps(snapshot->mSessionId, zoomSteps);
+            if (isConsumed)
                 return message == WM_XBUTTONDOWN || message == WM_XBUTTONUP || message == WM_XBUTTONDBLCLK ? TRUE : 0;
         }
         if (message == WM_NCDESTROY && g_Window.load() == window)

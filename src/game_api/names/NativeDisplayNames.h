@@ -12,4 +12,10 @@ namespace rareplay::game_api
  * 调用期间须保持可读，只能在游戏采样上下文调用。
  */
 std::string ReadTypeDisplayName(const AbstractTypeClass* type);
+
+/**
+ * 只读取 UIName：没有名称时返回空字符串，不回退到内部 ID。
+ * 用于调用方要自己决定回退顺序的场合（例如两段式超武先用前置超武的名称）。type 可为空。
+ */
+std::string ReadTypeUiName(const AbstractTypeClass* type);
 }

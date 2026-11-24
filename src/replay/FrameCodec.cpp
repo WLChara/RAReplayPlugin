@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <string>
+#include <tuple>
 #include <utility>
 
 namespace rareplay::replay
@@ -10,14 +12,27 @@ namespace rareplay::replay
 namespace
 {
 constexpr std::uint32_t STREAM_MAGIC = 0x32465052;
-constexpr std::uint32_t EVENT_BYTES = 111;
+// 帧流中每条事件的字节数取自 RecordedEvent，录像格式不另设一份长度。
+constexpr std::uint32_t EVENT_BYTES = static_cast<std::uint32_t>(std::tuple_size_v<RecordedEvent>);
 constexpr std::uint32_t CHECKSUM_PRESENT = 1;
 constexpr std::uint32_t GROUP_SNAPSHOT_PRESENT = 2;
+// v4 起：记录头之后紧跟 u32 游戏速度，再接事件、输入效果与编队成员。
+constexpr std::uint32_t GAME_SPEED_PRESENT = 4;
+// v5 的每帧记录与 v4 相同；各处布局与速度规则一律按 >= 判断，版本上限统一取 LATEST_STREAM_VERSION。
+constexpr std::uint32_t MAX_STREAM_VERSION = FrameCodec::LATEST_STREAM_VERSION;
 constexpr std::size_t FRAME_HEADER_BYTES = 16;
 constexpr std::size_t EFFECT_COUNT_BYTES = 4;
 constexpr std::size_t EFFECT_BYTES = 40;
 constexpr std::size_t GROUP_COUNT_BYTES = 4;
 constexpr std::size_t GROUP_MEMBER_BYTES = 12;
+constexpr std::size_t GAME_SPEED_BYTES = 4;
+
+/** 各版本 flags 允许的位：v1/v2 只有 bit0，v3 加 bit1，v4 起（含 v5）再加 bit2。 */
+constexpr std::uint32_t AllowedFrameFlags(std::uint32_t streamVersion)
+{
+    return CHECKSUM_PRESENT | (streamVersion >= 3 ? GROUP_SNAPSHOT_PRESENT : 0) |
+        (streamVersion >= FrameCodec::GAME_SPEED_STREAM_VERSION ? GAME_SPEED_PRESENT : 0);
+}
 
 void StoreU32(std::uint8_t* destination, std::uint32_t value)
 {
@@ -41,7 +56,7 @@ std::uint32_t LoadU32(const std::uint8_t* source)
 bool FrameCodec::EncodeHeader(const ReplaySessionInfo& info,
     std::array<std::uint8_t, HEADER_BYTES>& outBytes, std::string& error)
 {
-    if (info.mStreamVersion != 2 && info.mStreamVersion != 3)
+    if (info.mStreamVersion < 2 || info.mStreamVersion > MAX_STREAM_VERSION)
     {
         error = "不支持写入此帧流版本";
         return false;
@@ -74,7 +89,7 @@ bool FrameCodec::DecodeHeader(std::istream& stream, ReplaySessionInfo& outInfo, 
         return false;
     }
     const std::uint32_t version = LoadU32(bytes.data() + 4);
-    if (LoadU32(bytes.data()) != STREAM_MAGIC || (version < 1 || version > 3) ||
+    if (LoadU32(bytes.data()) != STREAM_MAGIC || (version < 1 || version > MAX_STREAM_VERSION) ||
         LoadU32(bytes.data() + 8) != EVENT_BYTES || LoadU32(bytes.data() + 20) != 0)
     {
         error = "Invalid or unsupported replay stream header";
@@ -93,7 +108,7 @@ bool FrameCodec::DecodeHeader(std::istream& stream, ReplaySessionInfo& outInfo, 
 bool FrameCodec::EncodeFrame(const ReplayFrame& frame, std::vector<std::uint8_t>& outBytes,
     std::string& error, std::uint32_t streamVersion)
 {
-    if (streamVersion != 2 && streamVersion != 3)
+    if (streamVersion < 2 || streamVersion > MAX_STREAM_VERSION)
     {
         error = "不支持写入此帧流版本";
         return false;
@@ -101,6 +116,16 @@ bool FrameCodec::EncodeFrame(const ReplayFrame& frame, std::vector<std::uint8_t>
     if (!ValidateRecordedControlGroups(frame.mRecordedGroups, frame.mFrameNumber,
         streamVersion, error))
     {
+        return false;
+    }
+    if (frame.mGameSpeed && streamVersion < GAME_SPEED_STREAM_VERSION)
+    {
+        error = "游戏速度只能写入帧流版本 4 及以上";
+        return false;
+    }
+    if (frame.mGameSpeed && *frame.mGameSpeed > MAX_GAME_SPEED)
+    {
+        error = "游戏速度超出 0..6：" + std::to_string(*frame.mGameSpeed);
         return false;
     }
     if (frame.mEvents.size() > MAX_EVENTS_PER_FRAME)
@@ -121,8 +146,9 @@ bool FrameCodec::EncodeFrame(const ReplayFrame& frame, std::vector<std::uint8_t>
             return false;
         }
     }
-    const std::size_t eventsOffset = FRAME_HEADER_BYTES + EFFECT_COUNT_BYTES +
-        (streamVersion == 3 ? GROUP_COUNT_BYTES : 0);
+    const std::size_t recordHeaderBytes = FRAME_HEADER_BYTES + EFFECT_COUNT_BYTES +
+        (streamVersion >= 3 ? GROUP_COUNT_BYTES : 0);
+    const std::size_t eventsOffset = recordHeaderBytes + (frame.mGameSpeed ? GAME_SPEED_BYTES : 0);
     const std::size_t effectsOffset = eventsOffset + frame.mEvents.size() * EVENT_BYTES;
     const std::size_t groupsOffset = effectsOffset + frame.mInputEffects.size() * EFFECT_BYTES;
     const std::size_t groupCount = frame.mRecordedGroups ?
@@ -132,13 +158,18 @@ bool FrameCodec::EncodeFrame(const ReplayFrame& frame, std::vector<std::uint8_t>
     StoreU32(outBytes.data() + 4, frame.mChecksum);
     StoreU32(outBytes.data() + 8, static_cast<std::uint32_t>(frame.mEvents.size()));
     StoreU32(outBytes.data() + 12, (frame.mHasChecksum ? CHECKSUM_PRESENT : 0) |
-        (frame.mRecordedGroups ? GROUP_SNAPSHOT_PRESENT : 0));
+        (frame.mRecordedGroups ? GROUP_SNAPSHOT_PRESENT : 0) |
+        (frame.mGameSpeed ? GAME_SPEED_PRESENT : 0));
     StoreU32(outBytes.data() + FRAME_HEADER_BYTES,
         static_cast<std::uint32_t>(frame.mInputEffects.size()));
-    if (streamVersion == 3)
+    if (streamVersion >= 3)
     {
         StoreU32(outBytes.data() + FRAME_HEADER_BYTES + EFFECT_COUNT_BYTES,
             static_cast<std::uint32_t>(groupCount));
+    }
+    if (frame.mGameSpeed)
+    {
+        StoreU32(outBytes.data() + recordHeaderBytes, *frame.mGameSpeed);
     }
     for (std::size_t index = 0; index < frame.mEvents.size(); ++index)
     {
@@ -175,7 +206,7 @@ bool FrameCodec::EncodeFrame(const ReplayFrame& frame, std::vector<std::uint8_t>
 ReplayReadResult FrameCodec::ReadFrame(std::istream& stream, ReplayFrame& outFrame,
     std::string& error, std::uint32_t streamVersion)
 {
-    if (streamVersion < 1 || streamVersion > 3)
+    if (streamVersion < 1 || streamVersion > MAX_STREAM_VERSION)
     {
         error = "Unsupported replay stream version";
         return ReplayReadResult::Error;
@@ -183,7 +214,7 @@ ReplayReadResult FrameCodec::ReadFrame(std::istream& stream, ReplayFrame& outFra
     std::array<std::uint8_t, FRAME_HEADER_BYTES + EFFECT_COUNT_BYTES + GROUP_COUNT_BYTES> bytes{};
     const std::size_t headerBytes = FRAME_HEADER_BYTES +
         (streamVersion >= 2 ? EFFECT_COUNT_BYTES : 0) +
-        (streamVersion == 3 ? GROUP_COUNT_BYTES : 0);
+        (streamVersion >= 3 ? GROUP_COUNT_BYTES : 0);
     stream.read(reinterpret_cast<char*>(bytes.data()), headerBytes);
     if (stream.gcount() == 0 && stream.eof())
     {
@@ -197,16 +228,14 @@ ReplayReadResult FrameCodec::ReadFrame(std::istream& stream, ReplayFrame& outFra
     }
     const std::uint32_t eventCount = LoadU32(bytes.data() + 8);
     const std::uint32_t flags = LoadU32(bytes.data() + 12);
-    const std::uint32_t allowedFlags = CHECKSUM_PRESENT |
-        (streamVersion == 3 ? GROUP_SNAPSHOT_PRESENT : 0);
-    if (eventCount > MAX_EVENTS_PER_FRAME || (flags & ~allowedFlags) != 0)
+    if (eventCount > MAX_EVENTS_PER_FRAME || (flags & ~AllowedFrameFlags(streamVersion)) != 0)
     {
         error = "Replay frame count or flags are invalid";
         return ReplayReadResult::Error;
     }
     const std::uint32_t effectCount = streamVersion >= 2 ?
         LoadU32(bytes.data() + FRAME_HEADER_BYTES) : 0;
-    const std::uint32_t groupCount = streamVersion == 3 ?
+    const std::uint32_t groupCount = streamVersion >= 3 ?
         LoadU32(bytes.data() + FRAME_HEADER_BYTES + EFFECT_COUNT_BYTES) : 0;
     if (effectCount > MAX_INPUT_EFFECTS_PER_FRAME)
     {
@@ -232,6 +261,23 @@ ReplayReadResult FrameCodec::ReadFrame(std::istream& stream, ReplayFrame& outFra
         streamVersion, error))
     {
         return ReplayReadResult::Error;
+    }
+    if ((flags & GAME_SPEED_PRESENT) != 0)
+    {
+        std::array<std::uint8_t, GAME_SPEED_BYTES> speedBytes{};
+        stream.read(reinterpret_cast<char*>(speedBytes.data()), speedBytes.size());
+        if (stream.gcount() != static_cast<std::streamsize>(speedBytes.size()))
+        {
+            error = "游戏速度字段被截断";
+            return ReplayReadResult::Error;
+        }
+        const std::uint32_t gameSpeed = LoadU32(speedBytes.data());
+        if (gameSpeed > MAX_GAME_SPEED)
+        {
+            error = "游戏速度超出 0..6：" + std::to_string(gameSpeed);
+            return ReplayReadResult::Error;
+        }
+        frame.mGameSpeed = gameSpeed;
     }
     frame.mEvents.resize(eventCount);
     for (auto& event : frame.mEvents)
@@ -297,5 +343,39 @@ ReplayReadResult FrameCodec::ReadFrame(std::istream& stream, ReplayFrame& outFra
     outFrame = std::move(frame);
     error.clear();
     return ReplayReadResult::Frame;
+}
+
+bool FrameCodec::ValidateGameSpeed(const ReplayFrame& frame, std::uint32_t streamVersion,
+    std::uint32_t gameMode, std::string& error)
+{
+    if (!frame.mGameSpeed)
+    {
+        // 单机开局速度来自 spawn.ini，回放仍以录制值为准；第 0 帧必须给出写回起点。
+        if (CarriesGameSpeed(streamVersion, gameMode) && frame.mFrameNumber == 0)
+        {
+            error = "单机帧流第 0 帧缺少游戏速度";
+            return false;
+        }
+        error.clear();
+        return true;
+    }
+    if (streamVersion < GAME_SPEED_STREAM_VERSION)
+    {
+        error = "游戏速度只能出现在帧流版本 4 及以上";
+        return false;
+    }
+    if (*frame.mGameSpeed > MAX_GAME_SPEED)
+    {
+        error = "游戏速度超出 0..6：" + std::to_string(*frame.mGameSpeed);
+        return false;
+    }
+    // 联机速度由原生 GameSpeed 事件在事件阶段写入，帧流不得另行携带。
+    if (!IsOfflineGameMode(gameMode))
+    {
+        error = "联机帧流不得记录游戏速度";
+        return false;
+    }
+    error.clear();
+    return true;
 }
 }

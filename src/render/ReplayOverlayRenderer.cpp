@@ -3,6 +3,8 @@
 #include "OverlayFonts.h"
 #include "OverlayCursor.h"
 #include "OverlayInputProcessing.h"
+#include "OverlayPanelPresence.h"
+#include "../ui/ReplayHudScale.h"
 #include "../viewer/ReplayViewExchange.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_win32.h"
@@ -78,7 +80,7 @@ bool ReplayOverlayRenderer::InitializeImGui(HWND window) noexcept
             io.IniFilename = nullptr;
             io.LogFilename = nullptr;
             io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-            LoadOverlayFont(io);
+            // 字体在首次 Render 按 HUD 缩放装载；mFontScalePercent 为 0 表示尚未装载。
             ImGui::SetCurrentContext(previous);
             mHud.SetIconResolver([this](const std::shared_ptr<const viewer::IconImage>& image) {
                 return mIcons.Resolve(image);
@@ -248,29 +250,49 @@ bool ReplayOverlayRenderer::Render(HDC drawDc, viewer::ReplayViewExchange& excha
         ProcessInput(window, true);
         if (!mVisible)
         {
+            // F10 隐藏时立即撤回面板，游戏线程在下一次侧栏绘制时交回原生侧栏。
+            exchange.WithdrawHudPresence();
             ClearOverlayCursor();
             mInputQueue.PublishPolicy(true, false, false, {});
             return true;
         }
 
+        // 档位按客户区高度解析，与 Win32 后端随后计算的 DisplaySize 同源。
+        RECT client{};
+        GetClientRect(window, &client);
+        const int scalePercent = ui::ResolveHudScalePercent(snapshot->mHudScaleSetting,
+            static_cast<float>(client.bottom - client.top));
+        if (scalePercent != mFontScalePercent)
+        {
+            // 专用 RC 已绑定：先删除旧着色器、缓冲与字体纹理，再按目标像素重建 CPU 图集；
+            // 下面的 NewFrame 发现没有着色器，会按新图集重建全部设备对象。
+            ImGui_ImplOpenGL3_DestroyDeviceObjects();
+            LoadOverlayFont(ImGui::GetIO(), static_cast<float>(scalePercent) / 100.0f);
+            mFontScalePercent = scalePercent;
+            mAppliedScalePercent.store(scalePercent, std::memory_order_release);
+        }
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplWin32_NewFrame();
         RefreshOverlayMousePosition(window);
+        mHud.SetScalePercent(scalePercent);
         const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
-        ui::UiRect gameContentRect;
+        ui::GameImagePlacement gameImage;
         const double viewportRight = static_cast<double>(sourceViewport[0]) + sourceViewport[2];
         const double viewportTopInGl = static_cast<double>(sourceViewport[1]) + sourceViewport[3];
         if (sourceViewport[0] >= 0 && sourceViewport[1] >= 0 &&
             sourceViewport[2] > 0 && sourceViewport[3] > 0 &&
             viewportRight <= displaySize.x && viewportTopInGl <= displaySize.y)
         {
-            gameContentRect = {
+            gameImage.mRect = {
                 static_cast<float>(sourceViewport[0]),
                 displaySize.y - static_cast<float>(viewportTopInGl),
                 static_cast<float>(viewportRight),
                 displaySize.y - static_cast<float>(sourceViewport[1])};
+            // cnc-ddraw OpenGL 以最终 glViewport 放置游戏图像：maintas=false 为整块客户区，
+            // maintas/boxing 时为留边后的图像区域，因此此视口可作为图像位置的依据。
+            gameImage.mIsImageRect = true;
         }
-        mHud.SetGameContentRect(gameContentRect);
+        mHud.SetGameImagePlacement(gameImage);
         ImGui::NewFrame();
         mHud.Draw(*snapshot, exchange);
         UpdateOverlayCursor(window, snapshot->mActive, mVisible, mHud.GetVisibleRegions());
@@ -278,6 +300,7 @@ bool ReplayOverlayRenderer::Render(HDC drawDc, viewer::ReplayViewExchange& excha
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         mInputQueue.PublishPolicy(true, true, ImGui::GetIO().WantCaptureKeyboard,
                                   mHud.GetInputRegions());
+        ReportPanelPresence(exchange, *snapshot, mHud);
         return true;
     }
     catch (...)

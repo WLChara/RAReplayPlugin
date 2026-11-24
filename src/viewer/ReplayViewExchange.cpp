@@ -29,11 +29,51 @@ std::vector<ViewerCommand> ReplayViewExchange::Drain()
     return commands;
 }
 
+void ReplayViewExchange::PublishMarks(std::shared_ptr<const SuperWeaponMarkFrame> marks) noexcept
+{
+    mMarks.store(std::move(marks));
+}
+
+std::shared_ptr<const SuperWeaponMarkFrame> ReplayViewExchange::ReadMarks() const noexcept
+{
+    return mMarks.load();
+}
+
 void ReplayViewExchange::Clear()
 {
     Publish(nullptr);
+    PublishMarks(nullptr);
+    WithdrawHudPresence();
     std::lock_guard lock(mCommandMutex);
     mCommands.clear();
+}
+
+void ReplayViewExchange::ReportHudPresented(std::uint64_t sessionId,
+    std::chrono::steady_clock::time_point presentedAt, bool isPanelCovering) noexcept
+{
+    std::int64_t ticks = presentedAt.time_since_epoch().count();
+    if (ticks == NO_PRESENCE)
+        ++ticks;
+    mPresenceSessionId.store(sessionId, std::memory_order_relaxed);
+    mPresenceCovering.store(isPanelCovering, std::memory_order_relaxed);
+    mPresenceTicks.store(ticks, std::memory_order_release);
+}
+
+void ReplayViewExchange::WithdrawHudPresence() noexcept
+{
+    mPresenceTicks.store(NO_PRESENCE, std::memory_order_release);
+}
+
+std::optional<HudPresence> ReplayViewExchange::ReadHudPresence() const noexcept
+{
+    const std::int64_t ticks = mPresenceTicks.load(std::memory_order_acquire);
+    if (ticks == NO_PRESENCE)
+        return std::nullopt;
+    HudPresence presence;
+    presence.mSessionId = mPresenceSessionId.load(std::memory_order_relaxed);
+    presence.mIsPanelCovering = mPresenceCovering.load(std::memory_order_relaxed);
+    presence.mPresentedAt = std::chrono::steady_clock::time_point(std::chrono::steady_clock::duration(ticks));
+    return presence;
 }
 
 ReplayViewExchange& GetReplayViewExchange() noexcept

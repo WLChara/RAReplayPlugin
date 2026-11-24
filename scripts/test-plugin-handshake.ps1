@@ -1,6 +1,5 @@
-param(
-    [Parameter(Mandatory = $true)]
-    [string]$GameExe
+﻿param(
+    [string]$GameExe = 'C:\Program Files (x86)\Mental Omega\gamemd.exe'
 )
 
 $ErrorActionPreference = 'Stop'

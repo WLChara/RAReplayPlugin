@@ -34,6 +34,8 @@ void OverlayInputQueue::PublishPolicy(bool playbackActive, bool overlayVisible, 
 
 bool OverlayInputQueue::RouteMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam) noexcept
 {
+    if (mZoomWheelResetRequested.exchange(false, std::memory_order_acq_rel))
+        mZoomWheelRemainder = 0;
     if (mClearCapturedButtonsRequested.exchange(false, std::memory_order_acq_rel))
     {
         mCapturedButtons = 0;
@@ -53,6 +55,7 @@ bool OverlayInputQueue::RouteMessage(HWND window, UINT message, WPARAM wParam, L
     {
         mCapturedButtons = 0;
         mGameButtons = 0;
+        mZoomWheelRemainder = 0;
         return false;
     }
 
@@ -63,6 +66,7 @@ bool OverlayInputQueue::RouteMessage(HWND window, UINT message, WPARAM wParam, L
         {
             mCapturedButtons = 0;
             mGameButtons = 0;
+            mZoomWheelRemainder = 0;
             if (mOwnsWindowCapture)
             {
                 if (GetCapture() == window)
@@ -86,6 +90,13 @@ bool OverlayInputQueue::RouteMessage(HWND window, UINT message, WPARAM wParam, L
     {
         Enqueue(MSG{window, message, wParam, lParam, static_cast<DWORD>(GetMessageTime()), {0, 0}});
         return false;
+    }
+
+    // 先于 HUD 可见性判断：F10 隐藏 HUD 时没有输入区域，Ctrl+滚轮仍然缩放战局。
+    if (IsBattlefieldZoomWheel(*policy, window, message, wParam, lParam))
+    {
+        AccumulateBattlefieldZoomWheel(GET_WHEEL_DELTA_WPARAM(wParam));
+        return true;
     }
 
     if (!policy->mOverlayVisible)
@@ -137,14 +148,11 @@ bool OverlayInputQueue::RouteMessage(HWND window, UINT message, WPARAM wParam, L
             const std::uint8_t buttonMask = ButtonMask(message, wParam);
             if (mCapturedButtons == 0 && !mOwnsWindowCapture)
             {
+                // 捕获已在本窗口上时是游戏自己的捕获：复用它，UI 抬起时不释放。
+                // 外层 mGameButtons == 0 已保证没有正在跟踪的原生拖拽，此时 UI 点击接管残留的宿主捕获；
+                // 否则其他窗口留下的捕获会让所有 HUD 点击直接透传给游戏。接管后由插件持有，抬起时释放。
                 const HWND capturedWindow = GetCapture();
-                if (capturedWindow != nullptr && capturedWindow != window)
-                {
-                    mGameButtons = static_cast<std::uint8_t>(mGameButtons | buttonMask);
-                    return false;
-                }
-                // 游戏可能已经捕获自己的窗口；复用它，但不能在 UI 抬起时释放它。
-                if (capturedWindow == nullptr && window != nullptr)
+                if (capturedWindow != window && window != nullptr)
                 {
                     SetCapture(window);
                     mOwnsWindowCapture = GetCapture() == window;
@@ -192,6 +200,11 @@ bool OverlayInputQueue::RouteMessage(HWND window, UINT message, WPARAM wParam, L
     return false;
 }
 
+int OverlayInputQueue::TakeBattlefieldZoomSteps() noexcept
+{
+    return mPendingZoomSteps.exchange(0, std::memory_order_relaxed);
+}
+
 void OverlayInputQueue::RequestFocusReset() noexcept
 {
     std::lock_guard lock(mQueueMutex);
@@ -231,6 +244,9 @@ void OverlayInputQueue::Clear() noexcept
 {
     mPolicy.store(nullptr, std::memory_order_release);
     mClearCapturedButtonsRequested.store(true, std::memory_order_release);
+    // 余量只在窗口线程读写，由它在下一条消息开始时归零。
+    mPendingZoomSteps.store(0, std::memory_order_relaxed);
+    mZoomWheelResetRequested.store(true, std::memory_order_release);
     std::lock_guard lock(mQueueMutex);
     mMessages.clear();
     mFocusResetRequested = true;
@@ -268,6 +284,32 @@ bool OverlayInputQueue::IsInsideRegion(const CapturePolicy& policy, const POINT&
         }
     }
     return false;
+}
+
+bool OverlayInputQueue::IsBattlefieldZoomWheel(const CapturePolicy& policy, HWND window, UINT message,
+                                                WPARAM wParam, LPARAM lParam) noexcept
+{
+    if (message != WM_MOUSEWHEEL || (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) == 0)
+        return false;
+    if (!policy.mOverlayVisible)
+        return true;
+    // 滚轮消息带屏幕坐标，与 HUD 区域比较前换算到客户区；区域内的 Ctrl+滚轮照常交给 ImGui 滚动面板。
+    POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+    ScreenToClient(window, &point);
+    return !IsInsideRegion(policy, point);
+}
+
+void OverlayInputQueue::AccumulateBattlefieldZoomWheel(int wheelDelta) noexcept
+{
+    // 反向滚动时丢弃上一方向的余量：高精度滚轮反向后不必先抵消旧余量才有反应。
+    if ((wheelDelta > 0 && mZoomWheelRemainder < 0) || (wheelDelta < 0 && mZoomWheelRemainder > 0))
+        mZoomWheelRemainder = 0;
+    mZoomWheelRemainder += wheelDelta;
+    // 整数除法向零截断，余量与滚动方向同号且绝对值小于一格。
+    const int steps = mZoomWheelRemainder / WHEEL_DELTA;
+    mZoomWheelRemainder -= steps * WHEEL_DELTA;
+    if (steps != 0)
+        mPendingZoomSteps.fetch_add(steps, std::memory_order_relaxed);
 }
 
 bool OverlayInputQueue::IsButtonDown(UINT message) noexcept

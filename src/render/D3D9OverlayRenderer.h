@@ -30,6 +30,8 @@ public:
     OverlayInputQueue& GetInputQueue() noexcept { return mInputQueue; }
     void ResetInput() noexcept;
     const char* GetFailureReason() const noexcept;
+    /** 诊断用：字体图集当前对应的 HUD 缩放百分比，尚未装载时为 0。任意线程可读。 */
+    int GetAppliedHudScalePercent() const noexcept { return mAppliedScalePercent.load(std::memory_order_acquire); }
 
 private:
     enum class FailureReason { None, WrongThread, InvalidDevice, Initialization, DeviceChanged, DeviceLost };
@@ -52,6 +54,9 @@ private:
     bool mVisible = true;
     bool mHasShownEnded = false;
     bool mDeviceLost = false;
+    // 呈现线程独占；设备重置或换设备时图集保留，只在档位变化时重建。
+    int mFontScalePercent = 0;
+    std::atomic<int> mAppliedScalePercent{0};
 };
 
 /** 进程期稳定实例，避免未知线程的 DLL 卸载阶段触发 COM/ImGui 析构。 */

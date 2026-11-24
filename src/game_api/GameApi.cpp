@@ -1,8 +1,11 @@
 #include "GameApi.h"
 
+#include "capture/DispatchedEvents.h"
 #include "native/NativeGame.h"
 #include "native/NativeShroud.h"
 #include "native/NativeControlGroups.h"
+#include "../replay/FrameCodec.h"
+#include "../target/TargetAbi.h"
 
 // 此版 YRpp 的 ProdFailType 仍使用 Win32 的小写 byte 基类型。
 using byte = unsigned char;
@@ -14,7 +17,6 @@ using byte = unsigned char;
 #include <SessionClass.h>
 #include <Unsorted.h>
 
-#include <bit>
 #include <cstring>
 
 namespace rareplay::game_api
@@ -23,6 +25,22 @@ namespace
 {
 static_assert(sizeof(EventClass) == 111);
 static_assert(offsetof(EventClass, Frame) == 3);
+// 分派采集的 SDK 无关规则与目标 ABI 常量必须与 YRpp 声明一致。
+static_assert(sizeof(EventClass) == target::EVENT_BYTES);
+static_assert(sizeof(EventClass) == std::tuple_size_v<replay::RecordedEvent>);
+static_assert(offsetof(EventClass, Type) == EVENT_TYPE_OFFSET);
+static_assert(offsetof(EventClass, Frame) == EVENT_FRAME_OFFSET);
+static_assert(static_cast<std::uint8_t>(EventType::FrameInfo) == EVENT_TYPE_FRAME_INFO);
+static_assert(EventClass::MAX_EVENTS * 128 == target::DO_LIST_CAPACITY);
+// 诊断读取 SessionClass::MPGameMode（0xA8B23C）；构造函数 0x5D5B60 在 0x5D5BBA 把 MPModeIndex 写到 this+0x28。
+static_assert(offsetof(SessionClass, MPGameMode) == 4);
+static_assert(offsetof(MPGameModeClass, MPModeIndex) == 0x28);
+
+bool IsExecuted(const EventClass& event)
+{
+    // SDK 将执行标志声明为 bool，原生只使用 bit0；按字节读取避免非 0/1 值的 bool 语义。
+    return (reinterpret_cast<const std::uint8_t*>(&event)[1] & 1) != 0;
+}
 }
 
 GameApi::GameApi() : mControlGroupRecorder(native::ReadRecordedControlGroups) {}
@@ -46,7 +64,9 @@ bool GameApi::ReadSessionInfo(replay::ReplaySessionInfo& outInfo, std::string& e
     outInfo.mFirstFrame = static_cast<std::uint32_t>(Unsorted::CurrentFrame);
     outInfo.mFrameSendRate = static_cast<std::uint32_t>(SessionClass::Instance.FrameSendRate);
     outInfo.mRandomSeed = static_cast<std::uint32_t>(Game::Seed);
-    outInfo.mStreamVersion = 3;
+    // 新录像一律写最新帧流版本 v5：布局与 v4 相同（联机帧流不带速度，与 v3 布局逐字节相同）；
+    // v5 另表示单机帧流录制时已中和飞机影子绘制的模拟副作用（R1），中和由 SetHeight 的 Hook 在插件接受请求后执行。
+    outInfo.mStreamVersion = replay::FrameCodec::LATEST_STREAM_VERSION;
     error.clear();
     return true;
 }
@@ -75,6 +95,12 @@ bool GameApi::CopyDueEvents(std::vector<replay::RecordedEvent>& outEvents, std::
     {
         error = "Invalid native event queue";
         return false;
+    }
+    // 单机 handleAny 还会执行全部过期事件，入口的 Frame==N 只是其子集；改由分派点逐条采集。
+    if (UsesDispatchEventCapture())
+    {
+        error.clear();
+        return true;
     }
     for (int index = 0; index < EventClass::DoList.Count; ++index)
     {
@@ -145,6 +171,35 @@ ControlGroupCaptureStats GameApi::GetControlGroupCaptureStats() const noexcept
     return mControlGroupRecorder.GetStats();
 }
 
+bool GameApi::ReadGameSpeed(std::int32_t& outSpeed, std::string& error)
+{
+    if (!mIsFrameActive || !IsWorldReady())
+    {
+        error = "No active game frame for game speed";
+        return false;
+    }
+    outSpeed = native::ReadGameSpeed();
+    error.clear();
+    return true;
+}
+
+bool GameApi::ApplyGameSpeed(std::uint32_t speed, std::string& error)
+{
+    if (!mIsFrameActive || !IsWorldReady())
+    {
+        error = "No active game frame for game speed playback";
+        return false;
+    }
+    if (speed > replay::FrameCodec::MAX_GAME_SPEED)
+    {
+        error = "Recorded game speed is outside 0..6";
+        return false;
+    }
+    native::WriteGameSpeed(static_cast<int>(speed));
+    error.clear();
+    return true;
+}
+
 bool GameApi::RecordPlayerInputEffect(const replay::RecordedInputEffect& effect,
     std::string& error)
 {
@@ -154,7 +209,11 @@ bool GameApi::RecordPlayerInputEffect(const replay::RecordedInputEffect& effect,
         error = "No active game frame for player input effect capture";
         return false;
     }
-    return mPlayerInputEffects.Append(effect, error);
+    if (!mPlayerInputEffects.Append(effect, error))
+        return false;
+    // MoveFlash 只在单机采集；记录点击发生在本帧原生解析器之前还是之后。
+    mDispatchCapture.RecordMoveFlash(ReadDispatchCaptureFrame());
+    return true;
 }
 
 bool GameApi::ExecuteReplayFrame(const replay::ReplayFrame& frame, std::string& error)
@@ -231,7 +290,7 @@ bool GameApi::ExecuteReplayFrame(const replay::ReplayFrame& frame, std::string& 
 
 void GameApi::DiscardLocalCommands()
 {
-    ProcessViewerCommands();
+    ConsumeLocalOutList();
     EventClass::OutList.Init();
 }
 
@@ -248,9 +307,10 @@ void GameApi::BeginFrame()
             mPlayerInputEffectsError))
         mIsFrameActive = false;
     mHasNativeChecksum = false;
+    mDispatchCapture.BeginFrame(mActiveFrame);
 }
 
-void GameApi::ProcessViewerCommands()
+void GameApi::ConsumeLocalOutList()
 {
     const int count = EventClass::OutList.Count;
     if (count < 0 || count > EventClass::MAX_EVENTS)
@@ -291,27 +351,112 @@ void GameApi::BeforeNativeEventExecution()
         (mode == GameMode::LAN || mode == GameMode::Internet) &&
         static_cast<std::uint32_t>(Unsorted::CurrentFrame) == mActiveFrame &&
         EventClass::LatestFramesCRC[mActiveFrame & 255] == EventClass::CurrentFrameCRC;
+    // 单机 handleAny 只由原生帧解析器在 0x6475AE 调用；入口即“进入本帧分派”的标记。
+    if (mDispatchCapture.OpenAtEventExecution(ReadDispatchCaptureFrame()))
+        RecordEntryDiagnostics();
 }
 
-void GameApi::InvokeNativeFrameParser()
+void GameApi::RecordEntryDiagnostics()
 {
-    native::InvokeFrameParser();
+    const int count = EventClass::DoList.Count;
+    if (count < 0 || count > EventClass::MAX_EVENTS * 128)
+        return;
+    std::uint32_t staleCount = 0;
+    std::uint32_t currentCount = 0;
+    std::uint32_t futureCount = 0;
+    for (int index = 0; index < count; ++index)
+    {
+        const EventClass& event = EventClass::DoList[index];
+        if (IsExecuted(event))
+            continue;
+        const auto relation = ClassifyEventFrame(event.Frame, mActiveFrame);
+        if (relation == EventFrameRelation::Stale)
+            ++staleCount;
+        else if (relation == EventFrameRelation::Current)
+            ++currentCount;
+        else
+            ++futureCount;
+    }
+    const int outListCount = EventClass::OutList.Count;
+    mDispatchCapture.RecordEntry(staleCount, currentCount, futureCount,
+        outListCount > 0 ? static_cast<std::uint32_t>(outListCount) : 0);
 }
 
-bool GameApi::InvokeNativePreworldWait()
+void GameApi::AfterNativeFrameParser() noexcept
 {
-    return native::WaitForPeers();
+    mDispatchCapture.CloseAfterFrameParser(static_cast<std::uint32_t>(Unsorted::CurrentFrame));
 }
 
-void GameApi::DrawViewerOnTop() { native::DrawViewerOnTop(); }
-void GameApi::ProcessGameOver() { native::ProcessGameOver(); }
-bool GameApi::IsReplayExitRequested() { return native::IsReplayExitRequested(); }
+bool GameApi::UsesDispatchEventCapture() const noexcept
+{
+    const auto mode = SessionClass::Instance.GameMode;
+    return mode == GameMode::Campaign || mode == GameMode::Skirmish;
+}
+
+bool GameApi::CopyDispatchedEvent(std::uint32_t ringIndex, replay::RecordedEvent& outEvent,
+    bool& outIsCaptured, std::string& error)
+{
+    outIsCaptured = false;
+    error.clear();
+    const auto admission = mDispatchCapture.AdmitDispatch(ReadDispatchCaptureFrame());
+    if (admission == DispatchAdmission::Unmarked)
+        return true;
+    if (ringIndex >= target::DO_LIST_CAPACITY || admission == DispatchAdmission::OutsideActiveFrame)
+    {
+        error = "Native event dispatch is outside the active recording frame";
+        return false;
+    }
+    const EventClass* events = EventClass::DoList.GetArray();
+    if (reinterpret_cast<std::uintptr_t>(events) != target::DO_LIST_EVENTS)
+    {
+        error = "Native DoList layout differs from the dispatch ABI";
+        return false;
+    }
+    replay::RecordedEvent dispatched{};
+    std::memcpy(dispatched.data(), &events[ringIndex], dispatched.size());
+    outIsCaptured = mDispatchCapture.Capture(dispatched, mActiveFrame, outEvent);
+    return true;
+}
+
+EventCaptureContext GameApi::ReadEventCaptureContext() const
+{
+    EventCaptureContext context;
+    context.mSessionGameMode = static_cast<std::uint32_t>(SessionClass::Instance.GameMode);
+    const MPGameModeClass* mode = SessionClass::Instance.MPGameMode;
+    context.mMpGameModeAddress = reinterpret_cast<std::uintptr_t>(mode);
+    if (mode)
+        context.mMpModeIndex = mode->MPModeIndex;
+    context.mUsesDispatchCapture = UsesDispatchEventCapture();
+    return context;
+}
+
+std::optional<EventCaptureFrameStats> GameApi::CompleteEventCaptureFrame() noexcept
+{
+    return mDispatchCapture.CompleteFrame(UsesDispatchEventCapture());
+}
+
+const EventCaptureTotals& GameApi::GetEventCaptureTotals() const noexcept
+{
+    return mDispatchCapture.GetTotals();
+}
+
+DispatchCaptureFrame GameApi::ReadDispatchCaptureFrame() const noexcept
+{
+    DispatchCaptureFrame frame;
+    frame.mActiveFrame = mActiveFrame;
+    frame.mIsFrameActive = mIsFrameActive;
+    frame.mCurrentFrame = static_cast<std::uint32_t>(Unsorted::CurrentFrame);
+    frame.mUsesDispatchCapture = UsesDispatchEventCapture();
+    return frame;
+}
+
+std::uint32_t GameApi::ReadSessionGameMode() const noexcept { return native::ReadSessionGameMode(); }
+bool GameApi::IsReplayExitRequested() const { return native::IsReplayExitRequested(); }
 void GameApi::UpdatePausedCamera() { native::UpdatePausedCamera(); }
 void GameApi::InvalidateViewerShroud() { native::InvalidateViewerShroud(); }
 void GameApi::ClearViewerShroud() noexcept { native::ClearViewerShroud(); }
-
-void GameApi::RestoreRandomSeedForInitialization(std::uint32_t seed)
-{
-    Game::Seed = std::bit_cast<std::int32_t>(seed);
-}
+void GameApi::ClearFrameBudgets() noexcept { native::ClearFrameBudgets(); }
+void GameApi::RequestFullRedraw() noexcept { native::RequestFullRedraw(); }
+void GameApi::MuteAudioForSeek() noexcept { native::MuteAudioForSeek(); }
+void GameApi::RestoreAudioAfterSeek() noexcept { native::RestoreAudioAfterSeek(); }
 }

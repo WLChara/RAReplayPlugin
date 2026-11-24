@@ -13,37 +13,50 @@ void DrawRecordedGroups(const viewer::ReplayViewSnapshot& snapshot)
             break;
         }
     }
-    ImGui::TextWrapped("录制方：%s", localName);
-    ImGui::TextDisabled("仅显示该玩家的本地编队");
+    TextWrappedFit("录制方：%s", localName);
+    TextWrappedDisabled("仅显示该玩家的本地编队");
     if (!snapshot.mHasRecordedGroups)
     {
-        ImGui::TextDisabled("此录像未记录编队历史");
+        TextWrappedDisabled("此录像未记录编队历史");
         return;
     }
     if (snapshot.mRecordedGroups.empty())
     {
-        ImGui::TextDisabled("录制方没有已保存编队");
+        TextWrappedDisabled("录制方没有已保存编队");
         return;
     }
+    // 每个编队一张卡片，卡片之间留出统一间距。
+    CardListSpacing spacing;
     for (const auto& group : snapshot.mRecordedGroups)
     {
         ImGui::PushID(group.mNumber);
-        ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.93f, 0.72f, 0.36f, 1.0f), "编队 %d", group.mNumber);
-        if (group.mUnits.empty() && group.mUnmatchedMemberCount == 0)
         {
-            ImGui::TextDisabled("无单位");
-        }
-        else
-        {
-            for (const auto& unit : group.mUnits)
+            CardScope card;
+            ImGui::TextColored(ImVec4(0.93f, 0.72f, 0.36f, 1.0f), "编队 %d", group.mNumber);
+            if (group.mUnits.empty() && group.mUnmatchedMemberCount == 0)
             {
-                const char* name = unit.mName.empty() ? unit.mTypeId.c_str() : unit.mName.c_str();
-                ImGui::BulletText("%s × %u", name, unit.mCount);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::Text("无单位");
+                ImGui::PopStyleColor();
+            }
+            else
+            {
+                for (const auto& unit : group.mUnits)
+                {
+                    const char* name = unit.mName.empty() ? unit.mTypeId.c_str() : unit.mName.c_str();
+                    // BulletText 不换行；窄面板改用圆点加自动换行文字（换行位置由卡片内边距决定）。
+                    ImGui::Bullet();
+                    ImGui::SameLine();
+                    ImGui::Text("%s × %u", name, unit.mCount);
+                }
+            }
+            if (group.mUnmatchedMemberCount != 0)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::Text("未匹配成员：%u", group.mUnmatchedMemberCount);
+                ImGui::PopStyleColor();
             }
         }
-        if (group.mUnmatchedMemberCount != 0)
-            ImGui::TextDisabled("未匹配成员：%u", group.mUnmatchedMemberCount);
         ImGui::PopID();
     }
 }

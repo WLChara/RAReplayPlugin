@@ -1,9 +1,13 @@
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <Windows.h>
 #include <Syringe.h>
 
-#include "ReplayConfig.h"
+#include "../storage/ReplayConfig.h"
 #include "../target/TargetImage.h"
 
 #include <filesystem>
@@ -25,9 +29,9 @@ SYRINGE_HANDSHAKE(info)
         std::string error;
         if (!rareplay::target::VerifyTargetExecutableFile(gameDirectory / L"gamemd.exe", error))
             return S_FALSE;
-        rareplay::plugin::ReplayRequest request;
+        rareplay::storage::ReplayRequest request;
         std::vector<std::uint8_t> rawBytes;
-        if (!rareplay::plugin::ReadReplayRequest(
+        if (!rareplay::storage::ReadReplayRequest(
                 gameDirectory / L"rareplay-runtime.bin", request, rawBytes, error))
             return S_FALSE;
         return S_OK;

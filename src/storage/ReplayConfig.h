@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace rareplay::plugin
+namespace rareplay::storage
 {
 enum class ReplayMode : std::uint32_t { Record = 1, Play = 2 };
 

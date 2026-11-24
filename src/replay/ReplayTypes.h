@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace rareplay::replay
@@ -37,6 +38,11 @@ struct ReplayFrame
     std::vector<RecordedEvent> mEvents;
     std::vector<RecordedInputEffect> mInputEffects;
     std::optional<RecordedControlGroupSnapshot> mRecordedGroups;
+    /**
+     * v4 起单机帧流记录的“本帧起的游戏速度”（GameOptionsClass::GameSpeed，0..6）。
+     * 空表示沿用前帧；单机帧流第 0 帧必有，联机帧流与 v1–3 帧流一律为空。
+     */
+    std::optional<std::uint32_t> mGameSpeed;
 };
 
 struct ReplaySessionInfo

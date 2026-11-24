@@ -11,10 +11,12 @@ using byte = unsigned char;
 #include <FileSystem.h>
 #include <PCX.h>
 #include <Surface.h>
+#include <SuperWeaponTypeClass.h>
 #include <TechnoTypeClass.h>
 #include <FileFormats/SHP.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <vector>
 
@@ -67,7 +69,8 @@ __declspec(noinline) bool FillSurface(Surface* surface, std::uint16_t color)
     return surface && surface->Fill(color);
 }
 
-std::shared_ptr<const viewer::IconImage> LoadPcx(const char* fileName,
+// key 为结果图像的缓存键；单位与超武用不同的前缀，即使引用同一个 PCX 文件也各自独立缓存。
+std::shared_ptr<const viewer::IconImage> LoadPcx(const char* fileName, const std::string& key,
     bool& outInvalidSurface)
 {
     if (!PCX::Instance.LoadFile(fileName))
@@ -82,7 +85,7 @@ std::shared_ptr<const viewer::IconImage> LoadPcx(const char* fileName,
         return {};
     }
     auto image = std::make_shared<viewer::IconImage>();
-    image->mKey = "pcx:" + std::string(fileName);
+    image->mKey = key;
     if (!assets::DecodeCameoPixels(pixels, width, height, width * 2,
         NativeRgb16Format(), PCX::DefaultTransparentColor, *image))
     {
@@ -92,10 +95,9 @@ std::shared_ptr<const viewer::IconImage> LoadPcx(const char* fileName,
     return image;
 }
 
-std::shared_ptr<const viewer::IconImage> LoadShp(const TechnoTypeClass* type,
-    const std::string& typeId, bool& outInvalidSurface)
+std::shared_ptr<const viewer::IconImage> LoadShp(SHPStruct* shape, const std::string& key,
+    bool& outInvalidSurface)
 {
-    SHPStruct* shape = type->GetCameo();
     if (!shape)
         return {};
     SHPFile* data = shape->GetData();
@@ -142,7 +144,7 @@ std::shared_ptr<const viewer::IconImage> LoadShp(const TechnoTypeClass* type,
         return {};
     }
     auto image = std::make_shared<viewer::IconImage>();
-    image->mKey = "shp:" + typeId;
+    image->mKey = key;
     if (!assets::DecodeCameoPixelsWithBackgrounds(darkPixels, lightPixels, width, height,
         width * 2, NativeRgb16Format(), *image))
     {
@@ -170,6 +172,7 @@ std::shared_ptr<const viewer::IconImage> LoadShp(const TechnoTypeClass* type,
 void CameoReader::Clear() noexcept
 {
     mTypes.Clear();
+    mSuperWeapons.Clear();
     mPcxFiles.clear();
     mStats.mPcx = 0;
     mStats.mShp = 0;
@@ -182,6 +185,7 @@ void CameoReader::Clear() noexcept
 void CameoReader::BeginSample() noexcept
 {
     mTypes.BeginSample();
+    mSuperWeapons.BeginSample();
 }
 
 std::shared_ptr<const viewer::IconImage> CameoReader::Resolve(const TechnoTypeClass* type)
@@ -216,7 +220,7 @@ std::shared_ptr<const viewer::IconImage> CameoReader::Load(const TechnoTypeClass
                 invalidSurface = found->second.mInvalidSurface;
             else if (!image)
             {
-                image = LoadPcx(pcxFile, invalidSurface);
+                image = LoadPcx(pcxFile, "pcx:" + fileName, invalidSurface);
                 found->second.mImage = image;
                 found->second.mMissing = !image;
                 found->second.mInvalidSurface = invalidSurface;
@@ -224,7 +228,7 @@ std::shared_ptr<const viewer::IconImage> CameoReader::Load(const TechnoTypeClass
         }
         else
         {
-            image = LoadPcx(pcxFile, invalidSurface);
+            image = LoadPcx(pcxFile, "pcx:" + fileName, invalidSurface);
             if (mPcxFiles.size() < MAX_PCX_ENTRIES)
                 mPcxFiles.emplace(fileName, PcxEntry{image, !image, invalidSurface});
         }
@@ -235,7 +239,7 @@ std::shared_ptr<const viewer::IconImage> CameoReader::Load(const TechnoTypeClass
             return image;
         }
     }
-    image = LoadShp(type, typeId, invalidSurface);
+    image = LoadShp(type->GetCameo(), "shp:" + typeId, invalidSurface);
     if (image)
     {
         ++mStats.mShp;
@@ -252,6 +256,64 @@ std::shared_ptr<const viewer::IconImage> CameoReader::Load(const TechnoTypeClass
     mStats.mRecentDetail = typeId + (invalidSurface ? ": invalid PCX/SHP surface" :
         pcxFile[0] ? ": PCX " + std::string(pcxFile) + " unavailable; SHP absent" :
         ": no PCX or SHP cameo");
+    return {};
+}
+
+std::shared_ptr<const viewer::IconImage> CameoReader::ResolveSuperWeapon(const SuperWeaponTypeClass* type)
+{
+    if (!type)
+        return {};
+    const std::string typeId(type->ID, strnlen_s(type->ID, sizeof(type->ID)));
+    if (typeId.empty())
+        return {};
+    bool atCapacity = false;
+    auto image = mSuperWeapons.Resolve("sw:" + typeId, [&] { return LoadSuperWeapon(type, typeId); }, atCapacity);
+    if (atCapacity)
+        ++mStats.mCacheLimit;
+    return image;
+}
+
+std::shared_ptr<const viewer::IconImage> CameoReader::LoadSuperWeapon(const SuperWeaponTypeClass* type,
+    const std::string& typeId)
+{
+    const std::string key = "sw:" + typeId;
+    char pcxFile[64]{};
+    if (CCINIClass::INI_Rules)
+        CCINIClass::INI_Rules->ReadString(type->ID, "SidebarPCX", "", pcxFile, sizeof(pcxFile));
+    // Ares 在预载入时把文件名转为小写；PCX::Instance 按名称查找是否区分大小写未核实，所以先转小写。
+    for (char* character = pcxFile; *character; ++character)
+        *character = static_cast<char>(std::tolower(static_cast<unsigned char>(*character)));
+    bool invalidSurface = false;
+    std::shared_ptr<const viewer::IconImage> image;
+    if (pcxFile[0])
+    {
+        image = LoadPcx(pcxFile, key, invalidSurface);
+        if (image)
+        {
+            ++mStats.mPcx;
+            mStats.mRecentDetail = typeId + ": PCX " + pcxFile;
+            return image;
+        }
+    }
+    // SidebarImage 在 SHP 缺失时被回退为 XXICON.SHP；那只是通用的“XX”图标，视为没有图标。
+    // XXICON 此时必已在文件缓存里（回退就是它加载的）；缓存里没有时说明没有任何类型回退到它，
+    // 这里的查找至多把它读进文件缓存一次，不影响模拟。
+    SHPStruct* shape = type->SidebarImage;
+    if (shape && shape != static_cast<SHPStruct*>(FileSystem::LoadFile("XXICON.SHP", false)))
+    {
+        image = LoadShp(shape, key, invalidSurface);
+        if (image)
+        {
+            ++mStats.mShp;
+            mStats.mRecentDetail = typeId + ": native SHP sidebar image";
+            return image;
+        }
+    }
+    ++mStats.mMissing;
+    if (invalidSurface)
+        ++mStats.mInvalidSurface;
+    mStats.mRecentDetail = typeId + (invalidSurface ? ": invalid PCX/SHP surface" :
+        pcxFile[0] ? ": PCX " + std::string(pcxFile) + " unavailable; no SHP" : ": no PCX or SHP sidebar image");
     return {};
 }
 }

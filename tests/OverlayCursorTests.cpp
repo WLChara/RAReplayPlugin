@@ -74,7 +74,7 @@ void CheckReadOnlyFpsCard()
     rareplay::viewer::ReplayViewSnapshot snapshot;
     snapshot.mSessionId = 1;
     snapshot.mActive = true;
-    snapshot.mNativeUiLayout = rareplay::viewer::NativeUiLayout{1024, 768, 220};
+    snapshot.mNativeUiLayout = rareplay::viewer::NativeUiLayout{1024, 768, {856, 158, 168, 610}};
     rareplay::viewer::ReplayViewExchange exchange;
     rareplay::ui::ReplayHud hud;
     ImGui::NewFrame();

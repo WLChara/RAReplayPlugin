@@ -1,5 +1,7 @@
 #include "RecordedControlGroups.h"
 
+#include "FrameCodec.h"
+
 #include <tuple>
 #include <unordered_set>
 
@@ -9,12 +11,14 @@ bool ValidateRecordedControlGroups(
     const std::optional<RecordedControlGroupSnapshot>& snapshot,
     std::uint32_t frameNumber, std::uint32_t streamVersion, std::string& error)
 {
-    if (streamVersion < 1 || streamVersion > 3 || (streamVersion < 3 && snapshot))
+    // v3 起（含 v4、v5）的编队规则相同。
+    if (streamVersion < 1 || streamVersion > FrameCodec::LATEST_STREAM_VERSION ||
+        (streamVersion < 3 && snapshot))
     {
         error = "编队数据与帧流版本不兼容";
         return false;
     }
-    if (streamVersion == 3 && frameNumber == 0 && !snapshot)
+    if (streamVersion >= 3 && frameNumber == 0 && !snapshot)
     {
         error = "编队帧流缺少初始完整快照";
         return false;

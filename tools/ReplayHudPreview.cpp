@@ -2,6 +2,7 @@
 
 #include "../src/ui/ReplayHud.h"
 #include "../src/ui/ReplayHudLayout.h"
+#include "../src/ui/ReplayHudScale.h"
 #include "../src/render/ReplayOverlayRenderer.h"
 #include "../src/render/OverlayFonts.h"
 #include "../src/viewer/ReplayViewExchange.h"
@@ -22,6 +23,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <stdexcept>
 #include <unordered_map>
@@ -36,12 +38,29 @@ struct PreviewOptions
     std::filesystem::path mCapturePath;
     int mWidth = 1600;
     int mHeight = 900;
-    rareplay::tools::ReplayHudDemoPanel mPanel = rareplay::tools::ReplayHudDemoPanel::Production;
+    // 0 表示游戏画布与窗口同尺寸；否则模拟 cnc-ddraw 把该画布拉伸到窗口。
+    int mCanvasWidth = 0;
+    int mCanvasHeight = 0;
+    rareplay::ui::ReplayPanel mPanel = rareplay::ui::ReplayPanel::Overview;
+    rareplay::viewer::HudScaleSetting mHudScale = rareplay::viewer::HudScaleSetting::Percent100;
+    std::optional<rareplay::viewer::UnitCategory> mUnitCategory;
+    // 经济曲线大窗口：是否打开、只看某位玩家（房屋下标）与时间范围。
+    bool mEconomyWindow = false;
+    std::optional<int> mEconomyOnlyHouse;
+    rareplay::ui::EconomyTimeRange mEconomyRange = rareplay::ui::EconomyTimeRange::All;
     bool mMissingData = false;
+    bool mNominalTime = false;
+    // 雷达事件提示栏：是否附带示例事件、折叠、历史模式；以及是否发布示例超武落点图标。
+    bool mRadar = false;
+    bool mRadarCollapsed = false;
+    bool mRadarHistory = false;
+    bool mMarks = false;
     bool mCapture = false;
     bool mHostSmoke = false;
     rareplay::viewer::PlaybackStatus mPlaybackStatus = rareplay::viewer::PlaybackStatus::Playing;
     bool mRestartError = false;
+    // 示例“快进中”状态（进度、取消与禁用的控件）。
+    bool mSeeking = false;
 };
 
 bool ParseInteger(const wchar_t* text, int& outValue)
@@ -88,6 +107,20 @@ bool ParseArguments(int argc, wchar_t** argv, PreviewOptions& options)
                 return false;
             }
         }
+        else if (argument == L"--canvas-width")
+        {
+            if (++index >= argc || !ParseInteger(argv[index], options.mCanvasWidth))
+            {
+                return false;
+            }
+        }
+        else if (argument == L"--canvas-height")
+        {
+            if (++index >= argc || !ParseInteger(argv[index], options.mCanvasHeight))
+            {
+                return false;
+            }
+        }
         else if (argument == L"--panel")
         {
             if (++index >= argc)
@@ -95,26 +128,100 @@ bool ParseArguments(int argc, wchar_t** argv, PreviewOptions& options)
                 return false;
             }
             const std::wstring panel = argv[index];
-            if (panel == L"production")
-            {
-                options.mPanel = rareplay::tools::ReplayHudDemoPanel::Production;
-            }
+            if (panel == L"overview")
+                options.mPanel = rareplay::ui::ReplayPanel::Overview;
+            else if (panel == L"production")
+                options.mPanel = rareplay::ui::ReplayPanel::Production;
             else if (panel == L"units")
-            {
-                options.mPanel = rareplay::tools::ReplayHudDemoPanel::Units;
-            }
+                options.mPanel = rareplay::ui::ReplayPanel::Units;
             else if (panel == L"groups")
-            {
-                options.mPanel = rareplay::tools::ReplayHudDemoPanel::Groups;
-            }
+                options.mPanel = rareplay::ui::ReplayPanel::Groups;
+            else if (panel == L"economy")
+                options.mPanel = rareplay::ui::ReplayPanel::Economy;
             else
-            {
                 return false;
-            }
+        }
+        else if (argument == L"--scale")
+        {
+            if (++index >= argc)
+                return false;
+            const std::wstring scale = argv[index];
+            const int value = scale == L"auto" ? 0 : static_cast<int>(wcstol(scale.c_str(), nullptr, 10));
+            const auto setting = rareplay::viewer::ToHudScaleSetting(value);
+            if (!setting || (value == 0 && scale != L"auto"))
+                return false;
+            options.mHudScale = *setting;
+        }
+        else if (argument == L"--unit-category")
+        {
+            if (++index >= argc)
+                return false;
+            const std::wstring category = argv[index];
+            if (category == L"all")
+                options.mUnitCategory.reset();
+            else if (category == L"infantry")
+                options.mUnitCategory = rareplay::viewer::UnitCategory::Infantry;
+            else if (category == L"vehicle")
+                options.mUnitCategory = rareplay::viewer::UnitCategory::Vehicle;
+            else if (category == L"aircraft")
+                options.mUnitCategory = rareplay::viewer::UnitCategory::Aircraft;
+            else if (category == L"building")
+                options.mUnitCategory = rareplay::viewer::UnitCategory::Building;
+            else if (category == L"other")
+                options.mUnitCategory = rareplay::viewer::UnitCategory::Other;
+            else
+                return false;
+        }
+        else if (argument == L"--economy-window")
+        {
+            options.mEconomyWindow = true;
+        }
+        else if (argument == L"--economy-only")
+        {
+            if (++index >= argc)
+                return false;
+            wchar_t* end = nullptr;
+            const long house = wcstol(argv[index], &end, 10);
+            if (end == argv[index] || *end != L'\0' || house < 0 || house > 64)
+                return false;
+            options.mEconomyOnlyHouse = static_cast<int>(house);
+        }
+        else if (argument == L"--economy-range")
+        {
+            if (++index >= argc)
+                return false;
+            const std::wstring range = argv[index];
+            if (range == L"all")
+                options.mEconomyRange = rareplay::ui::EconomyTimeRange::All;
+            else if (range == L"10")
+                options.mEconomyRange = rareplay::ui::EconomyTimeRange::LastTenMinutes;
+            else if (range == L"5")
+                options.mEconomyRange = rareplay::ui::EconomyTimeRange::LastFiveMinutes;
+            else
+                return false;
+        }
+        else if (argument == L"--radar")
+        {
+            if (++index >= argc)
+                return false;
+            const std::wstring mode = argv[index];
+            options.mRadar = true;
+            options.mRadarCollapsed = mode == L"collapsed";
+            options.mRadarHistory = mode == L"history";
+            if (mode != L"expanded" && mode != L"collapsed" && mode != L"history")
+                return false;
+        }
+        else if (argument == L"--marks")
+        {
+            options.mMarks = true;
         }
         else if (argument == L"--missing-data")
         {
             options.mMissingData = true;
+        }
+        else if (argument == L"--time-nominal")
+        {
+            options.mNominalTime = true;
         }
         else if (argument == L"--host-smoke")
         {
@@ -138,19 +245,33 @@ bool ParseArguments(int argc, wchar_t** argv, PreviewOptions& options)
         {
             options.mRestartError = true;
         }
+        else if (argument == L"--seeking")
+        {
+            options.mSeeking = true;
+        }
         else
         {
             return false;
         }
     }
+    if ((options.mCanvasWidth == 0) != (options.mCanvasHeight == 0))
+        return false;
     return (!options.mCapture || !options.mCapturePath.empty()) && (!options.mHostSmoke || options.mCapture);
 }
 
 void PrintUsage()
 {
     std::wcerr << L"用法：ReplayHudPreview [--capture <BMP路径>] [--width 1600] [--height 900] "
-                  L"[--panel production|units|groups] [--missing-data] [--host-smoke（需截图模式）] "
-                  L"[--playback-state playing|paused|ended] [--restart-error]\n";
+                  L"[--canvas-width 1024 --canvas-height 768（模拟拉伸）] "
+                  L"[--panel overview|production|units|groups|economy] [--scale auto|100|125|150|175|200] "
+                  L"[--unit-category all|infantry|vehicle|aircraft|building|other] "
+                  L"[--economy-window（打开资金曲线大窗口）] [--economy-only 房屋下标（只看该玩家）] "
+                  L"[--economy-range all|10|5（大窗口时间范围，分钟）] "
+                  L"[--radar expanded|collapsed|history（雷达事件提示栏及示例事件）] "
+                  L"[--marks（发布示例超武落点图标，并画出示意地图）] "
+                  L"[--missing-data] [--time-nominal（示例游戏时间带“名义”标记）] "
+                  L"[--host-smoke（需截图模式）] [--playback-state playing|paused|ended] [--restart-error] "
+                  L"[--seeking（示例快进中状态）]\n";
 }
 
 class PreviewApp final
@@ -169,16 +290,38 @@ public:
             return 1;
         }
 
-        const rareplay::tools::ReplayHudDemoOptions demoOptions{mOptions.mPanel, mOptions.mMissingData};
+        rareplay::tools::ReplayHudDemoOptions demoOptions;
+        demoOptions.mMissingData = mOptions.mMissingData;
+        demoOptions.mNominalTime = mOptions.mNominalTime;
+        demoOptions.mRadarEvents = mOptions.mRadar;
+        demoOptions.mSeeking = mOptions.mSeeking;
+        demoOptions.mCanvasWidth = mOptions.mCanvasWidth != 0 ? mOptions.mCanvasWidth : mOptions.mWidth;
+        demoOptions.mCanvasHeight = mOptions.mCanvasHeight != 0 ? mOptions.mCanvasHeight : mOptions.mHeight;
         mSnapshot = rareplay::tools::CreateReplayHudDemoSnapshot(demoOptions);
         mSnapshot->mPlaybackControls.mStatus = mOptions.mPlaybackStatus;
+        // 与游戏线程的口径一致：回放结束后不能再跳转，快进也随之结束。
+        if (mOptions.mPlaybackStatus == rareplay::viewer::PlaybackStatus::Ended)
+        {
+            mSnapshot->mPlaybackControls.mCanSeek = false;
+            mSnapshot->mPlaybackControls.mSeek = {};
+        }
+        mSnapshot->mHudScaleSetting = mOptions.mHudScale;
         if (mOptions.mRestartError)
             mSnapshot->mPlaybackControls.mRestartError = "无法重新播放：启动器通知写入失败，当前回放已保留";
         mExchange.Publish(mSnapshot);
         mHud.SetIconResolver([this](const std::shared_ptr<const rareplay::viewer::IconImage>& image) {
             return ResolveIcon(image);
         });
-        mHud.SelectPanel(ToUiPanel(mOptions.mPanel));
+        mHud.SelectPanel(mOptions.mPanel);
+        mHud.SetRadarBarCollapsed(mOptions.mRadarCollapsed);
+        mHud.SetRadarBarHistory(mOptions.mRadarHistory);
+        if (mOptions.mMarks && mSnapshot->mGameTime)
+            mExchange.PublishMarks(rareplay::tools::CreateReplayHudDemoMarks(demoOptions, mSnapshot->mGameTime->mMilliseconds));
+        mHud.SelectUnitCategory(mOptions.mUnitCategory);
+        mHud.SetEconomyWindowOpen(mOptions.mEconomyWindow);
+        mHud.SelectEconomyRange(mOptions.mEconomyRange);
+        if (mOptions.mEconomyOnlyHouse)
+            mHud.ShowOnlyEconomyPlayer(*mOptions.mEconomyOnlyHouse);
 
         if (!mOptions.mCapture)
         {
@@ -200,19 +343,6 @@ public:
     }
 
 private:
-    static rareplay::ui::ReplayPanel ToUiPanel(rareplay::tools::ReplayHudDemoPanel panel)
-    {
-        switch (panel)
-        {
-        case rareplay::tools::ReplayHudDemoPanel::Units:
-            return rareplay::ui::ReplayPanel::Units;
-        case rareplay::tools::ReplayHudDemoPanel::Groups:
-            return rareplay::ui::ReplayPanel::Groups;
-        default:
-            return rareplay::ui::ReplayPanel::Production;
-        }
-    }
-
     bool CreatePreviewWindow()
     {
         WNDCLASSEXW windowClass{};
@@ -230,15 +360,25 @@ private:
         }
 
         RECT windowRect{0, 0, mOptions.mWidth, mOptions.mHeight};
-        const DWORD style = WS_OVERLAPPEDWINDOW;
+        // 截图窗口不显示；用无边框弹出窗口，避免系统把大于屏幕工作区的标题栏窗口缩小。
+        const DWORD style = mOptions.mCapture ? WS_POPUP : WS_OVERLAPPEDWINDOW;
         AdjustWindowRect(&windowRect, style, FALSE);
         mWindow = CreateWindowExW(0, windowClass.lpszClassName, L"回放 HUD 布局预览",
-                                  style, CW_USEDEFAULT, CW_USEDEFAULT,
+                                  style, mOptions.mCapture ? 0 : CW_USEDEFAULT, mOptions.mCapture ? 0 : CW_USEDEFAULT,
                                   windowRect.right - windowRect.left, windowRect.bottom - windowRect.top,
                                   nullptr, nullptr, windowClass.hInstance, this);
         if (mWindow == nullptr)
         {
             std::wcerr << L"创建预览窗口失败：" << GetLastError() << L"\n";
+            return false;
+        }
+
+        RECT client{};
+        if (mOptions.mCapture && (!GetClientRect(mWindow, &client) ||
+            client.right - client.left != mOptions.mWidth || client.bottom - client.top != mOptions.mHeight))
+        {
+            std::wcerr << L"预览客户区不是请求的截图尺寸：" << client.right - client.left << L"×"
+                       << client.bottom - client.top << L"\n";
             return false;
         }
 
@@ -288,7 +428,7 @@ private:
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
 
-        rareplay::render::LoadOverlayFont(io);
+        // 字体在 RenderFrame 中按 HUD 缩放装载，与游戏内宿主同一规则。
 
         if (!ImGui_ImplWin32_Init(mWindow))
         {
@@ -334,6 +474,18 @@ private:
         {
             RenderFrame();
         }
+        if (!mOptions.mHostSmoke)
+        {
+            // 供审查核对：面板是否被视为完整覆盖原生侧栏，以及输入区域。
+            std::wcout << L"hudScalePercent=" << mFontScalePercent << L"\n";
+            std::wcout << L"sidebarPanelCovering=" << (mHud.IsSidebarPanelCovering() ? 1 : 0) << L"\n";
+            for (const auto& region : mHud.GetInputRegions())
+                std::wcout << L"inputRegion=" << region.mLeft << L"," << region.mTop << L","
+                           << region.mRight << L"," << region.mBottom << L"\n";
+            if (const auto& zoom = mHud.GetZoomControlRects())
+                std::wcout << L"zoomControls=" << zoom->mGroup.mLeft << L"," << zoom->mGroup.mTop << L","
+                           << zoom->mGroup.mRight << L"," << zoom->mGroup.mBottom << L"\n";
+        }
         return SaveBackBuffer(mOptions.mCapturePath);
     }
 
@@ -345,12 +497,18 @@ private:
         }
 
         ImGui::SetCurrentContext(mImGuiContext);
+        EnsureFontScale();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
         DrawNativeRadarPlaceholder();
+        if (mOptions.mMarks || mOptions.mRadar)
+            DrawNativeMapPlaceholder();
         if (!mOptions.mHostSmoke)
+        {
+            mHud.SetGameImagePlacement(GetPreviewImagePlacement());
             mHud.Draw(*mSnapshot, mExchange);
+        }
         ImGui::Render();
 
         glViewport(0, 0, mOptions.mWidth, mOptions.mHeight);
@@ -368,34 +526,112 @@ private:
                 ImGui::GetCurrentContext() != previousImGui)
                 throw std::runtime_error("Overlay failed to restore host graphics context");
         }
+        // 预览只模拟游戏线程对速度、界面缩放与跳转命令的处理（跳转只切换“快进中”的显示，帧号不前进）；
+        // 其他命令没有可演示的效果。
         for (const auto& command : mExchange.Drain())
         {
-            if (command.mSessionId != mSnapshot->mSessionId || command.mValue < 0 || command.mValue > 6)
+            if (command.mSessionId != mSnapshot->mSessionId)
                 continue;
             auto nextSnapshot = std::make_shared<rareplay::viewer::ReplayViewSnapshot>(*mSnapshot);
-            nextSnapshot->mPlaybackSpeedSetting = command.mValue;
+            const auto scale = rareplay::viewer::ToHudScaleSetting(command.mValue);
+            auto& seek = nextSnapshot->mPlaybackControls.mSeek;
+            if (command.mKind == rareplay::viewer::ViewerCommandKind::SetPlaybackSpeed &&
+                command.mValue >= 0 && command.mValue <= 6)
+                nextSnapshot->mPlaybackSpeedSetting = command.mValue;
+            else if (command.mKind == rareplay::viewer::ViewerCommandKind::SetHudScale && scale)
+                nextSnapshot->mHudScaleSetting = *scale;
+            else if (command.mKind == rareplay::viewer::ViewerCommandKind::SeekToFrame && command.mValue >= 0 &&
+                     static_cast<std::uint32_t>(command.mValue) > (seek.mIsSeeking ? seek.mTargetFrame : nextSnapshot->mFrameNumber))
+                seek = {true, seek.mIsSeeking ? seek.mStartFrame : nextSnapshot->mFrameNumber,
+                        static_cast<std::uint32_t>(command.mValue)};
+            else if (command.mKind == rareplay::viewer::ViewerCommandKind::CancelSeek && seek.mIsSeeking)
+                seek = {};
+            else
+                continue;
             mSnapshot = std::move(nextSnapshot);
             mExchange.Publish(mSnapshot);
         }
     }
 
-    void DrawNativeRadarPlaceholder()
+    // 与游戏内宿主相同：按客户区高度解析档位，变化时销毁 GL 设备对象并重建字体图集。
+    void EnsureFontScale()
+    {
+        RECT client{};
+        GetClientRect(mWindow, &client);
+        const int percent = rareplay::ui::ResolveHudScalePercent(mSnapshot->mHudScaleSetting,
+            static_cast<float>(client.bottom - client.top));
+        if (percent != mFontScalePercent)
+        {
+            ImGui_ImplOpenGL3_DestroyDeviceObjects();
+            rareplay::render::LoadOverlayFont(ImGui::GetIO(), static_cast<float>(percent) / 100.0f);
+            mFontScalePercent = percent;
+        }
+        mHud.SetScalePercent(percent);
+    }
+
+    // 预览模拟 cnc-ddraw OpenGL：游戏画布拉伸到整个客户区，最终视口即图像区域。
+    rareplay::ui::GameImagePlacement GetPreviewImagePlacement() const
     {
         const ImVec2 size = ImGui::GetIO().DisplaySize;
-        const auto bottom = rareplay::ui::GetSidebarPanelTop(mSnapshot->mNativeUiLayout,
-            size.x, size.y, {});
-        if (!bottom || *bottom < 75.0f)
+        return {{0.0f, 0.0f, size.x, size.y}, true};
+    }
+
+    // 原生资金条与雷达块（y < SidebarBounds.Y）的位置示意；游戏内不会绘制此方格。
+    void DrawNativeRadarPlaceholder()
+    {
+        if (!mSnapshot->mNativeUiLayout)
             return;
-        const ImVec2 topLeft(size.x - 190.0f, 14.0f);
-        const ImVec2 bottomRight(size.x - 14.0f, *bottom - 8.0f);
+        const auto& layout = *mSnapshot->mNativeUiLayout;
+        const rareplay::viewer::NativeRect reserve{layout.mSidebarPanel.mX, 0, layout.mSidebarPanel.mWidth,
+                                                   layout.mSidebarPanel.mY};
+        const ImVec2 size = ImGui::GetIO().DisplaySize;
+        const auto placement = rareplay::ui::MapNativeRect(layout, reserve, size.x, size.y, GetPreviewImagePlacement());
+        if (!placement)
+            return;
+        const ImVec2 topLeft(placement->mRect.mLeft, placement->mRect.mTop);
+        const ImVec2 bottomRight(placement->mRect.mRight, placement->mRect.mBottom);
         ImDrawList* background = ImGui::GetBackgroundDrawList();
-        background->AddRectFilled(topLeft, bottomRight, IM_COL32(19, 29, 25, 255), 5.0f);
-        background->AddRect(topLeft, bottomRight, IM_COL32(87, 114, 96, 255), 5.0f);
+        background->AddRectFilled(topLeft, bottomRight, IM_COL32(19, 29, 25, 255));
+        background->AddRect(topLeft, bottomRight, IM_COL32(87, 114, 96, 255));
         for (float x = topLeft.x + 12.0f; x < bottomRight.x; x += 24.0f)
-            background->AddLine({x, topLeft.y + 36.0f}, {x, bottomRight.y - 12.0f}, IM_COL32(39, 56, 46, 255));
-        for (float y = topLeft.y + 36.0f; y < bottomRight.y - 12.0f; y += 24.0f)
-            background->AddLine({topLeft.x + 12.0f, y}, {bottomRight.x - 12.0f, y}, IM_COL32(39, 56, 46, 255));
-        background->AddText({topLeft.x + 12.0f, topLeft.y + 10.0f}, IM_COL32(179, 195, 169, 255), "原生小地图保留区");
+            background->AddLine({x, topLeft.y + 30.0f}, {x, bottomRight.y - 6.0f}, IM_COL32(39, 56, 46, 255));
+        for (float y = topLeft.y + 30.0f; y < bottomRight.y - 6.0f; y += 24.0f)
+            background->AddLine({topLeft.x + 6.0f, y}, {bottomRight.x - 6.0f, y}, IM_COL32(39, 56, 46, 255));
+        const ImVec4 clip(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y);
+        background->AddText(nullptr, 0.0f, {topLeft.x + 6.0f, topLeft.y + 6.0f}, IM_COL32(179, 195, 169, 255),
+                            "原生资金条与小地图", nullptr, 0.0f, &clip);
+    }
+
+    // 战术视图的示意地图：深绿色地面加等距网格，只用来让落点图标与提示栏有背景；游戏内不会绘制。
+    void DrawNativeMapPlaceholder()
+    {
+        if (!mSnapshot->mNativeUiLayout)
+            return;
+        const auto& layout = *mSnapshot->mNativeUiLayout;
+        const ImVec2 size = ImGui::GetIO().DisplaySize;
+        const auto mapper = rareplay::ui::MakeNativePointMapper(layout.mCanvasWidth, layout.mCanvasHeight, size.x,
+                                                                size.y, GetPreviewImagePlacement());
+        if (!mapper)
+            return;
+        const rareplay::ui::UiRect view = mapper->MapRect({0, 0, layout.mCanvasWidth - 168, layout.mCanvasHeight - 32});
+        ImDrawList* background = ImGui::GetBackgroundDrawList();
+        background->PushClipRect(ImVec2(view.mLeft, view.mTop), ImVec2(view.mRight, view.mBottom), true);
+        background->AddRectFilled(ImVec2(view.mLeft, view.mTop), ImVec2(view.mRight, view.mBottom), IM_COL32(58, 82, 56, 255));
+        const float cellWidth = 60.0f * (view.mRight - view.mLeft) / static_cast<float>(layout.mCanvasWidth - 168);
+        const float cellHeight = cellWidth * 0.5f;
+        const ImU32 lineColor = IM_COL32(72, 98, 68, 255);
+        // 等距菱形网格：相邻两行错开半格。
+        int row = 0;
+        for (float y = view.mTop - cellHeight; y < view.mBottom + cellHeight; y += cellHeight * 0.5f, ++row)
+        {
+            const float offset = row % 2 == 0 ? 0.0f : cellWidth * 0.5f;
+            for (float x = view.mLeft - cellWidth + offset; x < view.mRight + cellWidth; x += cellWidth)
+            {
+                background->AddQuad(ImVec2(x, y), ImVec2(x + cellWidth * 0.5f, y + cellHeight * 0.5f),
+                                    ImVec2(x, y + cellHeight), ImVec2(x - cellWidth * 0.5f, y + cellHeight * 0.5f), lineColor);
+            }
+        }
+        background->PopClipRect();
     }
 
     ImTextureID ResolveIcon(const std::shared_ptr<const rareplay::viewer::IconImage>& image)
@@ -573,6 +809,7 @@ private:
     bool mWin32BackendReady = false;
     bool mOpenGlBackendReady = false;
     bool mCloseRequested = false;
+    int mFontScalePercent = 0;
     rareplay::ui::ReplayHud mHud;
     rareplay::viewer::ReplayViewExchange mExchange;
     std::shared_ptr<rareplay::viewer::ReplayViewSnapshot> mSnapshot;

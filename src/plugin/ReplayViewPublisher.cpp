@@ -1,10 +1,12 @@
 #include "ReplayViewPublisher.h"
+#include "BattlefieldZoomViewMapping.h"
 #include "Diagnostics.h"
 
 #include "../game_api/ReplayWorldReader.h"
 #include "../viewer/ReplayViewExchange.h"
 
 #include <cstdio>
+#include <utility>
 
 namespace rareplay::plugin
 {
@@ -24,7 +26,9 @@ void ReplayViewPublisher::Begin(std::string replayName, int recordedLocalHouseIn
 
 void ReplayViewPublisher::Publish(std::optional<int> playbackSpeedSetting, bool canChangeSpeed,
     const viewer::PlaybackControls& controls,
-    const std::optional<replay::RecordedControlGroupSnapshot>& recordedGroups)
+    const std::optional<replay::RecordedControlGroupSnapshot>& recordedGroups,
+    std::optional<std::uint32_t> totalFrames, std::shared_ptr<const viewer::GameTimeline> timeline,
+    ReplayStatsSession& stats, ReplayRadarSession& radar, const BattlefieldZoomSession& battlefieldZoom)
 {
     const auto now = std::chrono::steady_clock::now();
     if (mSessionId == 0 || now < mNextSample)
@@ -37,8 +41,14 @@ void ReplayViewPublisher::Publish(std::optional<int> playbackSpeedSetting, bool 
     snapshot->mRecordedLocalHouseIndex = mRecordedLocalHouseIndex;
     snapshot->mCanChangePlaybackSpeed = canChangeSpeed;
     snapshot->mPlaybackControls = controls;
+    snapshot->mHudScaleSetting = mHudScale;
     mWorldReader.Read(*snapshot, recordedGroups);
+    stats.ApplyTo(*snapshot);
+    radar.ApplyTo(*snapshot);
+    snapshot->mBattlefieldZoom = BuildBattlefieldZoomView(battlefieldZoom.GetStatus());
     snapshot->mFrameNumber = controls.mLastCompletedFrame;
+    snapshot->mTotalFrames = totalFrames;
+    snapshot->mTimeline = std::move(timeline);
     const auto& iconStats = mWorldReader.GetIconStats();
     const std::uint32_t iconAttempts = iconStats.mPcx + iconStats.mShp + iconStats.mMissing;
     if (iconAttempts > mIconLogCount && mIconLogCount < 12)
@@ -53,15 +63,27 @@ void ReplayViewPublisher::Publish(std::optional<int> playbackSpeedSetting, bool 
     if (snapshot->mNativeUiLayout && !mHasLoggedLayout)
     {
         const auto& layout = *snapshot->mNativeUiLayout;
-        char message[160]{};
-        std::snprintf(message, sizeof(message), "Replay HUD layout: canvas=%dx%d nativeContentTop=%d",
-            layout.mCanvasWidth, layout.mCanvasHeight, layout.mSidebarContentTop);
+        const auto& panel = layout.mSidebarPanel;
+        char message[192]{};
+        std::snprintf(message, sizeof(message),
+            "Replay HUD layout: canvas=%dx%d sidebarPanel=%d,%d %dx%d radarAvailable=%d",
+            layout.mCanvasWidth, layout.mCanvasHeight, panel.mX, panel.mY, panel.mWidth, panel.mHeight,
+            snapshot->mIsNativeRadarAvailable.value_or(false) ? 1 : 0);
         Log(message);
         mHasLoggedLayout = true;
     }
     if (playbackSpeedSetting)
         snapshot->mPlaybackSpeedSetting = *playbackSpeedSetting;
     viewer::GetReplayViewExchange().Publish(std::move(snapshot));
+}
+
+void ReplayViewPublisher::SetHudScale(viewer::HudScaleSetting setting) noexcept
+{
+    if (mHudScale == setting)
+        return;
+    mHudScale = setting;
+    // 观看者刚改了缩放，下一次发布不受采样节流限制，让界面立即换档。
+    mNextSample = {};
 }
 
 void ReplayViewPublisher::End()

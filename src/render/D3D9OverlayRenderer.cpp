@@ -3,6 +3,8 @@
 #include "OverlayFonts.h"
 #include "OverlayCursor.h"
 #include "OverlayInputProcessing.h"
+#include "OverlayPanelPresence.h"
+#include "../ui/ReplayHudScale.h"
 #include "../viewer/ReplayViewExchange.h"
 #include "imgui_impl_dx9.h"
 #include "imgui_impl_win32.h"
@@ -116,7 +118,7 @@ bool D3D9OverlayRenderer::Initialize(IDirect3DDevice9* device, HWND window) noex
             io.IniFilename = nullptr;
             io.LogFilename = nullptr;
             io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-            LoadOverlayFont(io);
+            // 字体在首次 Render 按 HUD 缩放装载；mFontScalePercent 为 0 表示尚未装载。
             ImGui::SetCurrentContext(previous);
             mHud.SetIconResolver([this](const std::shared_ptr<const viewer::IconImage>& image) {
                 return mIcons.Resolve(mDevice, image);
@@ -243,20 +245,36 @@ bool D3D9OverlayRenderer::Render(IDirect3DDevice9* device,
         ProcessOverlayInput(mInputQueue, target.mWindow, true, mVisible);
         if (!mVisible)
         {
+            // F10 隐藏时立即撤回面板，游戏线程在下一次侧栏绘制时交回原生侧栏。
+            exchange.WithdrawHudPresence();
             ClearOverlayCursor();
             mInputQueue.PublishPolicy(true, false, false, {});
             return true;
         }
 
+        // 档位按客户区高度解析，与 Win32 后端随后计算的 DisplaySize 同源。
+        const int scalePercent = ui::ResolveHudScalePercent(snapshot->mHudScaleSetting,
+            static_cast<float>(target.mClientHeight));
+        if (scalePercent != mFontScalePercent)
+        {
+            // 在呈现线程、设备未丢失时释放旧字体纹理与缓冲，再按目标像素重建 CPU 图集；
+            // 下面的 NewFrame 发现没有字体纹理，会按新图集重建设备对象。设备丢失期间不会走到这里。
+            ImGui_ImplDX9_InvalidateDeviceObjects();
+            LoadOverlayFont(ImGui::GetIO(), static_cast<float>(scalePercent) / 100.0f);
+            mFontScalePercent = scalePercent;
+            mAppliedScalePercent.store(scalePercent, std::memory_order_release);
+        }
         ImGui_ImplDX9_NewFrame();
         if (ImGui::GetIO().Fonts->TexID == nullptr)
         {
             // 官方 NewFrame 对设备对象创建失败没有返回值，避免误报 HUD 已绘制。
+            // 新图集保留在 CPU 侧，下一帧 NewFrame 会再次尝试创建纹理。
             SetFailure(FailureReason::Initialization);
             return false;
         }
         ImGui_ImplWin32_NewFrame();
         RefreshOverlayMousePosition(target.mWindow);
+        mHud.SetScalePercent(scalePercent);
         ImGuiIO& io = ImGui::GetIO();
         const float scaleX = static_cast<float>(target.mBackBufferWidth) /
                              static_cast<float>(target.mClientWidth);
@@ -270,7 +288,8 @@ bool D3D9OverlayRenderer::Render(IDirect3DDevice9* device,
         }
         io.DisplayFramebufferScale = ImVec2(scaleX, scaleY);
 
-        ui::UiRect gameContentRect;
+        // cnc-ddraw D3D9 保持整块视口、用顶点位置做等比留边，所以视口只作保守参考，不能确认图像位置。
+        ui::GameImagePlacement gameImage;
         const double viewportRight = static_cast<double>(target.mGameViewport.X) +
                                      target.mGameViewport.Width;
         const double viewportBottom = static_cast<double>(target.mGameViewport.Y) +
@@ -279,19 +298,20 @@ bool D3D9OverlayRenderer::Render(IDirect3DDevice9* device,
             viewportRight <= target.mBackBufferWidth &&
             viewportBottom <= target.mBackBufferHeight)
         {
-            gameContentRect = {
+            gameImage.mRect = {
                 static_cast<float>(target.mGameViewport.X) / scaleX,
                 static_cast<float>(target.mGameViewport.Y) / scaleY,
                 static_cast<float>(viewportRight) / scaleX,
                 static_cast<float>(viewportBottom) / scaleY};
         }
-        mHud.SetGameContentRect(gameContentRect);
+        mHud.SetGameImagePlacement(gameImage);
         ImGui::NewFrame();
         mHud.Draw(*snapshot, exchange);
         UpdateOverlayCursor(target.mWindow, snapshot->mActive, mVisible, mHud.GetVisibleRegions());
         ImGui::Render();
         ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
         mInputQueue.PublishPolicy(true, true, io.WantCaptureKeyboard, mHud.GetInputRegions());
+        ReportPanelPresence(exchange, *snapshot, mHud);
         mFailureReason.store(FailureReason::None, std::memory_order_release);
         return true;
     }
