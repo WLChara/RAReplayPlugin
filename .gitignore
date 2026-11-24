@@ -1,6 +1,5 @@
 /build/
 /docs/*
-!/docs/wwsb.txt
 /.vs/
 /out/
 /debug/
