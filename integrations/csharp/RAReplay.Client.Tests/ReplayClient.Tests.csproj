@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <!-- 与类库、DTAClient.csproj 使用同一份 Ionic.Zip；构建机路径不同时用 /p:IonicZipPath 覆盖。 -->
+    <IonicZipPath Condition="'$(IonicZipPath)' == ''">C:\Program Files (x86)\Mental Omega\Resources\Binaries\Ionic.Zip.dll</IonicZipPath>
+    <!-- 宿主接入示例按测试方式编译，由 HostLifecycleTests 驱动，不生成示例自己的入口。 -->
+    <DefineConstants>$(DefineConstants);REPLAY_HOST_TESTS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\RAReplay.Client\RAReplay.Client.csproj" />
+    <Compile Include="..\HostExample\Program.cs" Link="HostReplayAdapter.cs" />
+    <!-- 压缩包用例用 Ionic.Zip 现场生成测试夹具，并验证类库的 IonicReplayZipArchive 适配。 -->
+    <Reference Include="Ionic.Zip">
+      <HintPath>$(IonicZipPath)</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

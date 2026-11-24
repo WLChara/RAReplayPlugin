@@ -4,5 +4,14 @@
     <LangVersion>7.3</LangVersion>
     <Nullable>disable</Nullable>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- 与 DTAClient.csproj 引用同一份 Ionic.Zip（DotNetZip 1.9.1.8）；构建机路径不同时用 /p:IonicZipPath 覆盖。 -->
+    <IonicZipPath Condition="'$(IonicZipPath)' == ''">C:\Program Files (x86)\Mental Omega\Resources\Binaries\Ionic.Zip.dll</IonicZipPath>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- 只在 IonicReplayZipArchive 中使用；运行时与 clientdx.exe 共用游戏 Binaries 目录里的同一份程序集，不随类库分发。 -->
+    <Reference Include="Ionic.Zip">
+      <HintPath>$(IonicZipPath)</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
 </Project>

@@ -5,7 +5,8 @@ using System.Security.Cryptography;
 using System.Text;
 using RAReplay.Client;
 
-internal static class Program
+// 宿主接入示例（HostExample）的录制、播放、查看器通道与重播生命周期检查。
+internal static class HostLifecycleTests
 {
     private static void Check(bool condition, string message)
     {
@@ -50,12 +51,12 @@ internal static class Program
         }
     }
 
-    private static void Run(string root)
+    internal static void Run(string root)
     {
         Directory.CreateDirectory(root);
         byte[] map = Encoding.ASCII.GetBytes("synthetic map");
         byte[] exe = Encoding.ASCII.GetBytes("synthetic exe");
-        byte[] ini = Encoding.ASCII.GetBytes("[Settings]\nSeed=42\nPort=1234\n[Other1]\nIp=10.0.0.1\n");
+        byte[] ini = Encoding.ASCII.GetBytes("[Settings]\nSeed=42\nPort=1234\n[Other1]\nIp=203.0.113.1\n");
         byte[] spawnMap = Encoding.ASCII.GetBytes("[Map]\nWidth=64\n");
         string mapPath = Path.Combine(root, "base.map");
         string exePath = Path.Combine(root, "gamemd.exe");
@@ -212,26 +213,5 @@ internal static class Program
         }
         host.OnGameProcessExited();
         Check(pending.Count == 0, "cleanup retry cannot replay consumed restart");
-    }
-
-    private static int Main(string[] args)
-    {
-        string root = Path.Combine(Path.GetTempPath(), "RAReplayClientTests-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            Run(root);
-            FrameStreamValidationTests.Run(root, args.Length == 0 ? null : args[0]);
-            Console.WriteLine("RAReplay.Client 合成协议与重播生命周期检查通过");
-            return 0;
-        }
-        catch (Exception error)
-        {
-            Console.Error.WriteLine(error);
-            return 1;
-        }
-        finally
-        {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
-        }
     }
 }

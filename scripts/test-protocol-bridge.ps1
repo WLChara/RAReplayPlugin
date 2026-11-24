@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $build = Join-Path $repo 'build/protocol-bridge'
 $csBuild = Join-Path $build 'csharp'
@@ -9,7 +9,8 @@ $csSources = @(
     (Join-Path $repo 'tests/ProtocolBridge.cs'),
     (Join-Path $repo 'integrations/csharp/RAReplay.Client/ReplayLaunchManifest.cs'),
     (Join-Path $repo 'integrations/csharp/RAReplay.Client/ReplayRuntimeRequest.cs'),
-    (Join-Path $repo 'integrations/csharp/RAReplay.Client/ReplayArchive.cs')
+    (Join-Path $repo 'integrations/csharp/RAReplay.Client/ReplayArchive.cs'),
+    (Join-Path $repo 'integrations/csharp/RAReplay.Client/ReplayBlockStream.cs')
 )
 foreach ($source in $csSources) {
     if (-not (Test-Path -LiteralPath $source)) { throw "缺少 C# 接入源码：$source" }
