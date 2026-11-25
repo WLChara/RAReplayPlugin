@@ -88,6 +88,8 @@ Syringe 握手测试。它只把指定的游戏可执行文件复制到临时目
 
 ## 许可证
 
-本项目以 [GNU 通用公共许可证第 3 版（GPL-3.0）](LICENSE) 发布。
+Copyright (C) 2026 WLChara
+
+本项目依据 GNU 通用公共许可证第 3 版（`GPL-3.0-only`，仅限第 3 版）发布，全文见 [LICENSE](LICENSE)。该许可同样适用于本仓库的全部历史版本，包括添加许可证文件之前的提交。
 
 `third_party` 中的第三方组件保留各自的许可，见各自目录中的许可文件：YRpp、Dear ImGui、MinHook、kiero、zlib。
