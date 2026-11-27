@@ -63,6 +63,12 @@ void OnNativeFrameParserReturned() noexcept;
 void OnFrameComplete() noexcept;
 bool OnPlaybackParser() noexcept;
 bool ShouldBypassPeerProgressWait() noexcept;
+/**
+ * DoBlit 整屏送屏后的 Sleep(50) 处每次调用一次，只在游戏线程。规则见 RuntimeGates 的同名判定：已接受的启动请求是播放、
+ * 播放尚未开始且没有启动失败时返回 true，Hook 据此跳过这次等待。不调用 OnStartup：还没有已接受请求时（bootstrap 之前的
+ * WinMain 阶段）直接返回 false，保持原生。每个进程第一次返回 true 时记一行技术日志。不抛异常。
+ */
+bool ShouldSkipLoadBlitSleep() noexcept;
 void OnSessionEnd() noexcept;
 void OnHookFailure() noexcept;
 }

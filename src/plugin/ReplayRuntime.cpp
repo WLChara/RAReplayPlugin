@@ -10,6 +10,7 @@
 #include "ViewerCommandRouter.h"
 #include "../viewer/ReplayViewExchange.h"
 #include "../game_api/GameApi.h"
+#include "../game_api/StateDigestReader.h"
 #include "../replay/FrameCodec.h"
 #include "../replay/ReplaySession.h"
 #include "../stats/GameTimelineBuilder.h"
@@ -20,6 +21,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <memory>
 #include <utility>
@@ -84,6 +86,7 @@ public:
     }
 
     bool IsPlaybackViewActive() const noexcept { return plugin::IsPlaybackViewActive(GetGateState()); }
+    bool ShouldSkipLoadBlitSleep() const noexcept { return plugin::ShouldSkipLoadBlitSleep(GetGateState()); }
 
     // 只读请求类型与当前 GameMode，不看会话状态；开局前即可求值，录制与播放两端从同一时刻开始中和。
     bool ShouldNeutralizeAircraftShadowSideEffects() noexcept
@@ -327,11 +330,15 @@ public:
         if (IsPlaybackPlaying())
         {
             CaptureRuntimeGameSpeed();
+            const std::uint32_t completedFrame = mSession.GetLastCompletedFrame();
             auto token = PushSeekPhase(SeekPhase::Plugin);
-            mViewing.OnPlaybackFrameCompleted(mSession.GetLastCompletedFrame());
+            mViewing.OnPlaybackFrameCompleted(completedFrame);
             PopSeekPhase(token);
             // 停点：第“目标”帧完成后结束快进；跳转前在暂停时恢复暂停，下一帧的门控即保持在这里。
-            if (mSeek.OnFrameCompleted(mSession.GetLastCompletedFrame()))
+            // 停点的状态摘要在结束快进之前记录，与间隔摘要一样计入本次快进的插件段。
+            const bool isSeekReached = mSeek.OnFrameCompleted(completedFrame);
+            RecordStateDigest(completedFrame, isSeekReached);
+            if (isSeekReached)
                 EndSeek(SeekEndReason::Reached, true);
             token = PushSeekPhase(SeekPhase::Plugin);
             UpdateViewer();
@@ -674,6 +681,38 @@ private:
         mIsAudioMuted = false;
     }
 
+    // ---- 只读状态摘要 ----
+
+    /**
+     * 帧完成点按 ShouldRecordStateDigest 的时机只读计算一份世界摘要并写一行技术日志，供比对两次播放到同一帧的世界。
+     * 耗时在快进中计入插件段。读取或格式化抛出异常时只停用本场的摘要并记一行日志，不影响回放。
+     */
+    void RecordStateDigest(std::uint32_t completedFrame, bool isSeekReached) noexcept
+    {
+        if (mIsStateDigestDisabled ||
+            !plugin::ShouldRecordStateDigest(GetGateState(), completedFrame, isSeekReached, mLastStateDigestFrame))
+            return;
+        mLastStateDigestFrame = completedFrame;
+        const auto token = PushSeekPhase(SeekPhase::Plugin);
+        try
+        {
+            Log(game_api::FormatStateDigestLog(game_api::ReadStateDigest()).c_str());
+        }
+        catch (const std::exception& exception)
+        {
+            mIsStateDigestDisabled = true;
+            char message[160]{};
+            std::snprintf(message, sizeof(message), "Replay state digest disabled: %s", exception.what());
+            Log(message);
+        }
+        catch (...)
+        {
+            mIsStateDigestDisabled = true;
+            Log("Replay state digest disabled after an exception");
+        }
+        PopSeekPhase(token);
+    }
+
     // ---- 时间表 ----
 
     /** 录像不带速度（v1–v3 单机）时，时间表按第 0 帧的运行时速度整段换算；在第一个完成帧读取一次，读取失败下一帧再试。 */
@@ -850,6 +889,9 @@ private:
     std::shared_ptr<const viewer::GameTimeline> mTimeline;
     // 第一个完成帧读到的 GameOptions.GameSpeed，供不带速度的录像换算时间表。
     std::optional<int> mRuntimeGameSpeed;
+    // 只读状态摘要：上次记录的帧号（同一帧不重复记录），以及读取异常后本场停用。
+    std::optional<std::uint32_t> mLastStateDigestFrame;
+    bool mIsStateDigestDisabled = false;
     bool mHasTimelineFailed = false;
     bool mIsStarted = false;
     bool mIsPlaybackSourceOpen = false;
@@ -861,6 +903,8 @@ private:
 
 std::unique_ptr<ReplayRuntime> g_Runtime;
 bool g_StartupAttempted = false;
+// 进程级：载入提速第一次生效时记一行日志，之后整个进程不再记（会话结束不复位）。
+bool g_HasLoggedLoadBlitSleepSkip = false;
 }
 
 void OnStartup() noexcept
@@ -1071,6 +1115,19 @@ bool ShouldBypassPeerProgressWait() noexcept
 {
     OnStartup();
     return g_Runtime && g_Runtime->IsPlayback();
+}
+
+bool ShouldSkipLoadBlitSleep() noexcept
+{
+    // 不调用 OnStartup：bootstrap 之前没有已接受的请求，WinMain 阶段的 DoBlit 保持原生等待。
+    if (!g_Runtime || !g_Runtime->ShouldSkipLoadBlitSleep())
+        return false;
+    if (!g_HasLoggedLoadBlitSleepSkip)
+    {
+        g_HasLoggedLoadBlitSleepSkip = true;
+        Log("Replay load blit sleep skipped");
+    }
+    return true;
 }
 
 void OnSessionEnd() noexcept

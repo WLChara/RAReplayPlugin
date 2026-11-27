@@ -82,6 +82,15 @@ DEFINE_HOOK(0x684B3E, ReplayPreworldWaitHook, 5)
     return static_cast<DWORD>(rareplay::target::PREWORLD_WAIT_CONTINUE);
 }
 
+// 载入提速 L1：覆盖 DoBlit 中完整的 push 32h 与 call ds:[Sleep]（8 字节，无相对位移）。回放载入期间跳到下一条指令，
+// 两条指令一并跳过，栈平衡；其余情况返回 0，由 Syringe 重放原指令照常等待。
+DEFINE_HOOK(0x4F4B8E, ReplayLoadBlitSleepHook, 8)
+{
+    if (rareplay::plugin::ShouldSkipLoadBlitSleep())
+        return static_cast<DWORD>(rareplay::target::LOAD_BLIT_SLEEP_CONTINUE);
+    return 0;
+}
+
 DEFINE_HOOK(0x48CEAF, ReplaySessionEndHook, 5)
 {
     rareplay::hooks::GetViewerInputScope().Reset();

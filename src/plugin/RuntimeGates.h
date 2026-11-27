@@ -3,6 +3,7 @@
 #include "../replay/ReplaySession.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace rareplay::plugin
 {
@@ -65,4 +66,25 @@ bool ShouldRunBeforeSimulation(const RuntimeGateState& state) noexcept;
  * 到会话结束都适用，录制与播放两端因此从同一时刻开始中和。帧流 v5 的单机录像以此为录制契约。
  */
 bool ShouldNeutralizeAircraftShadowSideEffects(bool isPlaybackRequest, std::uint32_t gameMode) noexcept;
+
+/**
+ * 载入提速 L1：DoBlit 整屏送屏后的 Sleep(50) 是否跳过。只在已接受的启动请求是播放、播放尚未开始、且没有启动失败时为真，
+ * 也就是开局载入期间（载入画面的进度绘制、StartScenario 与 spawner 的整屏送屏）。录制、开始播放之后（对话框、影片等）
+ * 以及启动失败后都保持原生等待；没有已接受请求时（bootstrap 之前）由调用方直接判为假。
+ *
+ * 只看“播放请求已接受且尚未开始”，不看载入进行到哪一步：以后若在同一进程内重开回放，重开的载入期间运行时会把
+ * “尚未开始”重新置回，同一判定照样生效。被跳过的只是挂钟等待，不读写模拟状态。
+ */
+bool ShouldSkipLoadBlitSleep(const RuntimeGateState& state) noexcept;
+
+/** 只读状态摘要的固定记录间隔（帧）：第 0 帧与此后帧号为它的倍数的帧完成时各记一次。 */
+inline constexpr std::uint32_t STATE_DIGEST_FRAME_INTERVAL = 1000;
+
+/**
+ * 帧完成点是否记录只读状态摘要：只在回放播放中（IsPlaybackPlaying，录制、暂停、结束与失败都不记），且本帧帧号是
+ * STATE_DIGEST_FRAME_INTERVAL 的倍数（含第 0 帧）或本帧是快进到达的目标帧；同一帧号已记过（lastRecordedFrame）时不再记。
+ * 快进中照常按间隔记录。
+ */
+bool ShouldRecordStateDigest(const RuntimeGateState& state, std::uint32_t completedFrame, bool isSeekReached,
+    std::optional<std::uint32_t> lastRecordedFrame) noexcept;
 }

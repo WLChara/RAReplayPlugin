@@ -61,4 +61,17 @@ bool ShouldNeutralizeAircraftShadowSideEffects(bool isPlaybackRequest, std::uint
 {
     return isPlaybackRequest || replay::FrameCodec::IsOfflineGameMode(gameMode);
 }
+
+bool ShouldSkipLoadBlitSleep(const RuntimeGateState& state) noexcept
+{
+    return state.mIsPlayback && !state.mIsStarted && !state.mHasStartFailed;
+}
+
+bool ShouldRecordStateDigest(const RuntimeGateState& state, std::uint32_t completedFrame, bool isSeekReached,
+    std::optional<std::uint32_t> lastRecordedFrame) noexcept
+{
+    if (!IsPlaybackPlaying(state) || lastRecordedFrame == completedFrame)
+        return false;
+    return completedFrame % STATE_DIGEST_FRAME_INTERVAL == 0 || isSeekReached;
+}
 }

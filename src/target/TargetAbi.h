@@ -53,6 +53,14 @@ constexpr std::uintptr_t FRAME_PARSER_CONTINUE = 0x55DE45;
 constexpr std::uintptr_t FRAME_COMPLETE = 0x55DE7E;
 constexpr std::uintptr_t PREWORLD_WAIT_CALL = 0x684B3E;
 constexpr std::uintptr_t PREWORLD_WAIT_CONTINUE = 0x684B43;
+// 载入提速 L1：GScreenClass::DoBlit（0x4F4780）整屏送屏之后、擦除软件光标之前的 Sleep(50)。8 字节 push 32h 与
+// call ds:[0x7E11F0]（Sleep 导入槽）（6A 32 FF 15 F0 11 7E 00），绝对间接调用，无相对位移。只在第一参数 mouseCaptured 为真
+// 且 g_MouseRenderer 非空时从 0x4F4B8C 顺序到达；内部 0x4F4B90 不是任何跳转目标。载入画面的进度绘制、StartScenario 与
+// spawner 的整屏送屏都以 mouseCaptured=1 经过这里，正常帧的 PresentFrame 以 0 调用，在 0x4F4B83 已跳过。
+// 续点是下一条指令 mov ecx,[g_MouseRenderer]，它重新取 ECX 后压栈，不依赖 EAX；从起点直接跳到续点即同时跳过 push 与
+// call，栈保持平衡。
+constexpr std::uintptr_t LOAD_BLIT_SLEEP = 0x4F4B8E;
+constexpr std::uintptr_t LOAD_BLIT_SLEEP_CONTINUE = 0x4F4B96;
 constexpr std::uintptr_t SESSION_END = 0x48CEAF;
 constexpr std::uintptr_t SIDEBAR_COMMAND_ENTRY = 0x6AAD00;
 constexpr std::uintptr_t SIDEBAR_COMMAND_BLOCK_RETURN = 0x6AAD20;
@@ -219,6 +227,13 @@ constexpr std::uintptr_t GAME_OPERATOR_DELETE = 0x7C8B3D;
 constexpr std::uintptr_t SCREEN_SHAKE_X = 0x87F7EC;
 constexpr std::uintptr_t SCREEN_SHAKE_Y = 0x87F7F0;
 static_assert(SCREEN_SHAKE_Y == SCREEN_SHAKE_X + 4);
+
+// ---- 只读状态摘要 ----
+// int：Timing 事件的处理分支（0x4C800C）在新 MaxAhead 或 FrameSendRate 变大时写入事件帧号（0x4C8055），否则写 0（0x4C8047）；
+// handleAny 入口（0x64C3A3 起）把帧号落在它与 FRAME_SYNC_TARGET_FRAME 之间的未来事件改到目标帧。摘要只读。
+constexpr std::uintptr_t TIMING_TIME_STAMP = 0xA8B1F8;
+// int：同一分支按 ⌊(帧号 + MaxAhead + FrameSendRate − 1) / FrameSendRate⌋ × FrameSendRate 写入（0x4C8072）。摘要只读。
+constexpr std::uintptr_t FRAME_SYNC_TARGET_FRAME = 0xA8B1DC;
 
 // ---- 回放战局缩放 ----
 // 以下 Hook 的原字节、相对位移、分支目标、寄存器与栈都经 IDA 对照原生指令逐一核对。

@@ -311,6 +311,86 @@ void CheckAircraftShadowNeutralization()
     Require(ShouldNeutralizeAircraftShadowSideEffects(true, 0xFFFFFFFFu) &&
         !ShouldNeutralizeAircraftShadowSideEffects(false, 0xFFFFFFFFu), "Unknown modes record without neutralizing");
 }
+
+// 载入提速 L1：只在播放请求已接受、尚未开始且没有启动失败时跳过等待；其余状态（会话状态、界面、半黑幕等）都不影响。
+void CheckLoadBlitSleepGate()
+{
+    using rareplay::plugin::ShouldSkipLoadBlitSleep;
+    ForEachState([](const RuntimeGateState& s) {
+        Require(ShouldSkipLoadBlitSleep(s) == (s.mIsPlayback && !s.mIsStarted && !s.mHasStartFailed),
+            "Load blit sleep is skipped only while an accepted playback has not started");
+    });
+
+    RuntimeGateState loading;
+    loading.mIsPlayback = true;
+    Require(ShouldSkipLoadBlitSleep(loading), "Playback loading skips the sleep before the source opens");
+    loading.mIsPlaybackSourceOpen = true;
+    Require(ShouldSkipLoadBlitSleep(loading), "Playback loading skips the sleep after the source opens");
+
+    auto started = loading;
+    started.mIsStarted = true;
+    started.mReplayState = ReplayState::Playing;
+    Require(!ShouldSkipLoadBlitSleep(started), "Started playback keeps the native sleep");
+    auto failed = loading;
+    failed.mHasStartFailed = true;
+    Require(!ShouldSkipLoadBlitSleep(failed), "Failed start keeps the native sleep");
+
+    RuntimeGateState recording;
+    Require(!ShouldSkipLoadBlitSleep(recording), "Recording before start keeps the native sleep");
+    recording.mIsStarted = true;
+    recording.mReplayState = ReplayState::Recording;
+    Require(!ShouldSkipLoadBlitSleep(recording), "Started recording keeps the native sleep");
+}
+
+// 状态摘要时机：播放中的第 0 帧、1000 的倍数与快进到达的目标帧；同一帧只记一次；非播放会话不记。
+void CheckStateDigestSchedule()
+{
+    using rareplay::plugin::ShouldRecordStateDigest;
+    using rareplay::plugin::STATE_DIGEST_FRAME_INTERVAL;
+    static_assert(STATE_DIGEST_FRAME_INTERVAL == 1000);
+    RuntimeGateState playing;
+    playing.mIsStarted = true;
+    playing.mIsPlayback = true;
+    playing.mIsPlaybackSourceOpen = true;
+    playing.mReplayState = ReplayState::Playing;
+
+    Require(ShouldRecordStateDigest(playing, 0, false, std::nullopt), "Frame 0 is recorded");
+    for (const std::uint32_t frame : {1000u, 2000u, 51000u})
+        Require(ShouldRecordStateDigest(playing, frame, false, frame - 1000), "Multiples of 1000 are recorded");
+    for (const std::uint32_t frame : {1u, 999u, 1001u, 1999u, 12345u})
+        Require(!ShouldRecordStateDigest(playing, frame, false, 0u), "Other frames are not recorded");
+
+    // 快进到达目标帧时记录，无论帧号；途中的 1000 倍数照常记录。
+    Require(ShouldRecordStateDigest(playing, 12345, true, 12000u), "The seek target frame is recorded");
+    Require(ShouldRecordStateDigest(playing, 3000, true, 2000u), "A seek target on an interval frame is recorded");
+    // 同一帧号已记过（例如快进停点恰为 1000 的倍数且已按间隔记录）时不再记。
+    Require(!ShouldRecordStateDigest(playing, 3000, true, 3000u), "A frame is recorded at most once");
+    Require(!ShouldRecordStateDigest(playing, 0, false, 0u), "Frame 0 is recorded at most once");
+
+    // 非播放：暂停、结束、失败、未开始、录制都不记。
+    for (const auto state : {ReplayState::Paused, ReplayState::Ended, ReplayState::Failed, ReplayState::Finished,
+             ReplayState::Inactive})
+    {
+        auto s = playing;
+        s.mReplayState = state;
+        Require(!ShouldRecordStateDigest(s, 0, true, std::nullopt), "Only a playing session is recorded");
+    }
+    auto unstarted = playing;
+    unstarted.mIsStarted = false;
+    Require(!ShouldRecordStateDigest(unstarted, 0, true, std::nullopt), "Unstarted playback is not recorded");
+    RuntimeGateState recording;
+    recording.mIsStarted = true;
+    recording.mReplayState = ReplayState::Recording;
+    Require(!ShouldRecordStateDigest(recording, 0, true, std::nullopt), "Recording is not recorded");
+    recording.mReplayState = ReplayState::Playing;
+    Require(!ShouldRecordStateDigest(recording, 1000, true, std::nullopt), "A record request never digests");
+
+    // 与播放判定一致：全部状态组合下，可记录的前提就是 IsPlaybackPlaying。
+    ForEachState([](const RuntimeGateState& s) {
+        Require(ShouldRecordStateDigest(s, 2000, false, std::nullopt) == rareplay::plugin::IsPlaybackPlaying(s),
+            "Interval digests follow IsPlaybackPlaying");
+    });
+}
 }
 
 int main()
@@ -323,6 +403,8 @@ int main()
         CheckBeforeSimulationGate();
         CheckAircraftShadowNeutralization();
         CheckSeekGate();
+        CheckLoadBlitSleepGate();
+        CheckStateDigestSchedule();
         std::cout << "Runtime gate tests passed\n";
         return 0;
     }

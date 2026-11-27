@@ -166,6 +166,8 @@ add_library(ReplayGameApi STATIC
     src/game_api/native/NativeObjectRedraw.cpp
     src/game_api/HouseRoster.cpp
     src/game_api/ReplayWorldReader.cpp
+    src/game_api/StateDigest.cpp
+    src/game_api/StateDigestReader.cpp
     src/game_api/stats/StatsReader.cpp
     src/game_api/NativeSidebar.cpp
     src/game_api/NativeTooltips.cpp
@@ -392,6 +394,11 @@ if(BUILD_TESTING)
     add_executable(DispatchedEventCaptureTests tests/DispatchedEventCaptureTests.cpp)
     target_link_libraries(DispatchedEventCaptureTests PRIVATE ReplayGameApi)
     add_test(NAME DispatchedEventCapture COMMAND DispatchedEventCaptureTests)
+
+    # 只读状态摘要的哈希组合与日志格式同样是 game_api 中不含 YRpp 的纯逻辑（game_api/StateDigest）。
+    add_executable(StateDigestTests tests/StateDigestTests.cpp)
+    target_link_libraries(StateDigestTests PRIVATE ReplayGameApi)
+    add_test(NAME StateDigest COMMAND StateDigestTests)
 
     # 战局缩放的帧决策同样是 game_api 中不含 YRpp 的纯逻辑（game_api/zoom/ZoomFramePlan）。
     add_executable(ZoomFramePlanTests tests/ZoomFramePlanTests.cpp)
