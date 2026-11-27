@@ -190,6 +190,14 @@ std::optional<viewer::HudPresence> PlaybackViewingSession::ReadCurrentHudPresenc
     return presence;
 }
 
+std::optional<std::chrono::steady_clock::time_point> PlaybackViewingSession::ReadHudPresentedAt() const noexcept
+{
+    const auto presence = ReadCurrentHudPresence();
+    if (!presence)
+        return std::nullopt;
+    return presence->mPresentedAt;
+}
+
 // 每帧在游戏线程检查一次：回放播放中且 HUD 可见（心跳未超时；快进中只要心跳仍在）时关闭原生提示，否则恢复原值。
 void PlaybackViewingSession::UpdateNativeTooltips(bool isPlaybackViewActive, bool isSeeking) noexcept
 {

@@ -1,13 +1,22 @@
 #include "ViewerInputScope.h"
 
+#include "../game_api/native/NativeGame.h"
 #include "../plugin/ReplayRuntime.h"
 #include "../target/TargetAbi.h"
 
 #include <Syringe.h>
 
 // 函数级输入范围覆盖主循环与限速等待中的鼠标轮询。
+// 快进中按界面节拍降频：跳过的这次写出“无按键”后直接跳到函数末尾的 retn 0Ch（入口处 ESP 不变，正好清掉三个参数）；
+// 跳过路径不经过 0x4F43DC 的 Leave，所以不能进入输入范围。
 DEFINE_HOOK(0x4F4320, ReplayMouseInputBeginHook, 5)
 {
+    if (rareplay::plugin::ShouldSkipViewerInputUpdate())
+    {
+        rareplay::game_api::native::WriteNoViewerInputKey(
+            R->Stack<void*>(rareplay::target::VIEWER_MOUSE_INPUT_KEY_CODE_STACK));
+        return static_cast<DWORD>(rareplay::target::VIEWER_MOUSE_INPUT_SKIP_RETURN);
+    }
     rareplay::hooks::GetViewerInputScope().Enter();
     return 0;
 }

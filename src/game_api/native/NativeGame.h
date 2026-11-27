@@ -43,4 +43,9 @@ void MuteAudioForSeek() noexcept;
  * 取值与原生音量 setter 相同（音效 +0x38、语音 +0x3C、音乐 +0x40）。
  */
 void RestoreAudioAfterSeek() noexcept;
+/**
+ * 快进中跳过一次 GScreenClass::GetInputAndUpdate 时，替它写出“无按键”：outKeyCode 是该函数第一个栈参数（调用方的局部
+ * DWORD）。调用方随后把键码交给 KeyboardProcess，键码为 0 时它直接返回；两个鼠标输出不写，调用方也不读。
+ */
+void WriteNoViewerInputKey(void* outKeyCode) noexcept;
 }

@@ -1999,6 +1999,41 @@ FirstRowButtons MeasureFirstRowButtons(const UiRect& footer)
     return buttons;
 }
 
+const ImGuiWindow* FindActiveWindow(const char* name)
+{
+    for (ImGuiWindow* candidate : ImGui::GetCurrentContext()->Windows)
+    {
+        if (candidate->Active && std::strcmp(candidate->Name, name) == 0)
+            return candidate;
+    }
+    return nullptr;
+}
+
+// “快进中”标签：只在快进中绘制；在地图区（面板左缘、底栏上缘以内）正中、不越界，文字在内边距以内；
+// 记入可见区域（遮住原生光标时画 HUD 光标）但不拦截输入。mapArea 为主视口客户区坐标。
+void CheckSeekingLabel(const ReplayHud& hud, const std::string& name, bool isSeeking, const UiRect& mapArea)
+{
+    const auto& label = hud.GetSeekingLabelRect();
+    const ImGuiWindow* window = FindActiveWindow("快进中##ReplaySeekingLabel");
+    Require(label.has_value() == isSeeking && (window != nullptr) == isSeeking,
+            name + ": the seeking label is drawn only while seeking");
+    if (!label)
+        return;
+    Require(IsInside(*label, mapArea),
+            name + ": the seeking label stays in the map area, right " + std::to_string(label->mRight) + " of " +
+                std::to_string(mapArea.mRight) + ", bottom " + std::to_string(label->mBottom) + " of " +
+                std::to_string(mapArea.mBottom));
+    Require(std::abs(CenterX(*label) - CenterX(mapArea)) <= 1.0f && std::abs(CenterY(*label) - CenterY(mapArea)) <= 1.0f,
+            name + ": the seeking label is centered in the map area");
+    Require(SameRect(*label, {window->Pos.x, window->Pos.y, window->Pos.x + window->Size.x, window->Pos.y + window->Size.y}),
+            name + ": the label rect is the window rect");
+    Require(window->DC.CursorMaxPos.x <= window->Pos.x + window->Size.x - window->WindowPadding.x + 0.5f &&
+                window->DC.CursorMaxPos.y <= window->Pos.y + window->Size.y - window->WindowPadding.y + 0.5f,
+            name + ": the label text fits inside the padding");
+    Require(ContainsRect(hud.GetVisibleRegions(), *label) && !ContainsRect(hud.GetInputRegions(), *label),
+            name + ": the label is visible but does not take input");
+}
+
 // 快进中：状态文字与“取消”；暂停、速度、半黑幕与缩放禁用；退出与重新播放可用；进度条只接受目标之后的位置。
 void CheckSeekingFooter(HeadlessImGui& imgui)
 {
@@ -2040,9 +2075,20 @@ void CheckSeekingFooter(HeadlessImGui& imgui)
     Require(idleHud.GetInputRegions().size() == idleRegions, "control: the popup closes");
     exchange.Drain();
 
+    Require(!idleHud.GetSeekingLabelRect(), "no seeking label outside a seek");
+
     const auto seeking = MakeSeekSnapshot(1600, 900, SeekScenario::Seeking);
     ReplayHud hud;
     imgui.Draw(hud, seeking, 1600.0f, 900.0f, image);
+    CheckSeekingLabel(hud, "1600x900 seeking", true, {0.0f, 0.0f, footer.mRight, footer.mTop});
+    // 标签不拦截输入：点在它正中的鼠标交给游戏，不产生观看命令。
+    {
+        rareplay::render::OverlayInputQueue input;
+        input.PublishPolicy(true, true, false, hud.GetInputRegions());
+        const UiRect label = *hud.GetSeekingLabelRect();
+        Require(!IsConsumedClick(input, static_cast<int>(CenterX(label)), static_cast<int>(CenterY(label))),
+                "a click on the seeking label reaches the game");
+    }
     const auto rects = hud.GetSeekBarRects();
     Require(rects.mBar && rects.mIsInteractive && rects.mCancelButton, "seeking shows the bar and a cancel button");
     Require(IsInside(*rects.mCancelButton, footer) && IsInside(*rects.mBar, footer) &&
@@ -2145,6 +2191,7 @@ void CheckSeekBarLayouts(HeadlessImGui& imgui)
                         name + ": cancel only while seeking");
                 if (rects.mCancelButton)
                     Require(IsInside(*rects.mCancelButton, content), name + ": the cancel button is not clipped");
+                CheckSeekingLabel(hud, name, state == SeekScenario::Seeking, {0.0f, 0.0f, panel.mLeft, footerTop});
                 const auto zoom = hud.GetZoomControlRects();
                 Require(zoom && zoom->mGroup.mTop >= (rects.mBar ? rects.mBar->mBottom : footerTop),
                         name + ": the zoom row stays below the bar");

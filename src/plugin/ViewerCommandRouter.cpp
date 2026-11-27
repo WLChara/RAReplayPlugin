@@ -7,7 +7,7 @@ namespace rareplay::plugin
 namespace
 {
 // 快进中不执行的命令（界面同时禁用对应控件）：快进结束时恢复跳转前的暂停状态，期间不接受暂停；
-// 半黑幕、镜头跳转与战局缩放要重绘或移动镜头，而快进期间画面只按节拍刷新。
+// 半黑幕、镜头跳转与战局缩放要重绘或移动镜头，而快进期间战场不重绘（只有兜底时每秒一次）。
 bool IsBlockedWhileSeeking(viewer::ViewerCommandKind kind) noexcept
 {
     switch (kind)

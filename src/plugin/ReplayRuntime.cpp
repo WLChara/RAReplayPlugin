@@ -3,6 +3,7 @@
 #include "Diagnostics.h"
 #include "EventCaptureReporter.h"
 #include "PlaybackSeek.h"
+#include "PlaybackSeekProfile.h"
 #include "PlaybackTimelineScan.h"
 #include "PlaybackViewingSession.h"
 #include "RuntimeGates.h"
@@ -40,18 +41,22 @@ const char* GetSeekEndReasonName(SeekEndReason reason) noexcept
     return "unknown";
 }
 
-// 快进的绘制节拍与耗时用单调时钟的毫秒数。
+// 快进的兜底重绘节拍、输入降频与耗时都用单调时钟的毫秒数；HUD 呈现心跳取自同一时钟，按同一纪元换算。
+std::int64_t ToSteadyMs(std::chrono::steady_clock::time_point time) noexcept
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()).count();
+}
+
 std::int64_t GetSteadyNowMs() noexcept
 {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return ToSteadyMs(std::chrono::steady_clock::now());
 }
 
 /**
  * 游戏线程上唯一的启动请求、领域会话及文件句柄所有者，负责录制与播放的生命周期、帧驱动和观看命令的执行。
  * 观看呈现由成员 mViewing 装配，回放状态在每次调用时传给它。
- * 向前跳转：持有快进状态 mSeek、是否已静音，以及时间表扫描 mTimelineScan（插件唯一的工作线程，
- * 回放源打开后启动，会话结束、失败与退出时停止并 join）。
+ * 向前跳转：持有快进状态 mSeek、是否已静音、输入降频节拍与快进诊断累计，以及时间表扫描 mTimelineScan
+ * （插件唯一的工作线程，回放源打开后启动，会话结束、失败与退出时停止并 join）。
  */
 class ReplayRuntime
 {
@@ -97,6 +102,13 @@ public:
     NativeSidebarAction UpdateNativeSidebar() noexcept
     {
         return mViewing.UpdateNativeSidebar(IsPlaybackViewActive(), mSeek.IsActive());
+    }
+
+    // 不在快进中时不读时钟，节拍只忘掉上次的时刻，原生输入照常完整执行。
+    bool ShouldSkipViewerInputUpdate() noexcept
+    {
+        const bool isSeeking = mSeek.IsActive();
+        return mSeekInputThrottle.ShouldSkip(isSeeking, isSeeking ? GetSteadyNowMs() : 0);
     }
 
     // 雷达事件观察点：雷达会话未 Begin（录制或回放尚未开始）时这些调用立即返回。
@@ -153,6 +165,7 @@ public:
 
     void BeginFrame()
     {
+        MarkSeekPhase(SeekPhase::Input);
         mGame.BeginFrame();
         if (!mGame.IsWorldReady())
             return;
@@ -169,6 +182,7 @@ public:
     {
         if (!IsPlayback())
             return ViewerLoopAction::Continue;
+        MarkSeekPhase(SeekPhase::Simulation);
         if (mIsStarted)
             ConsumeViewerCommands();
         if (mHasExitRequested || mSession.GetState() == replay::ReplayState::Failed ||
@@ -199,7 +213,9 @@ public:
         ReportFailure(mSession.OnAfterFrameLoop());
         // 预取到 EOF 时会话转为结束：快进以“回放结束”结束，停在结束状态。
         SyncSeekWithSession();
+        const auto token = PushSeekPhase(SeekPhase::Plugin);
         UpdateViewer();
+        PopSeekPhase(token);
         return mSession.IsPlaybackHeld() || mHasExitRequested ||
             mSession.GetState() == replay::ReplayState::Failed;
     }
@@ -294,7 +310,10 @@ public:
     {
         // 快进中本帧不限速：FRAME_COMPLETE 在 RegulateFrameRate 之前，两个预算下一帧由原生重算。
         if (mSeek.IsActive())
+        {
+            MarkSeekPhase(SeekPhase::Other);
             mGame.ClearFrameBudgets();
+        }
         if (mIsStarted)
             ReportFailure(mSession.OnFrameEnd());
         if (IsRecordingActive())
@@ -302,14 +321,21 @@ public:
             if (const auto stats = mGame.CompleteEventCaptureFrame())
                 mEventCaptureReporter.ReportFrame(*stats);
         }
+        // 快进中逐帧清理积压（本帧记录处理之后）：脏矩形清零，电弧、光束与已解绑的尾迹超过阈值时整体删除。
+        if (mSeek.IsActive())
+            CleanSeekBacklog(SeekCleanupPoint::FrameCompleted);
         if (IsPlaybackPlaying())
         {
             CaptureRuntimeGameSpeed();
+            auto token = PushSeekPhase(SeekPhase::Plugin);
             mViewing.OnPlaybackFrameCompleted(mSession.GetLastCompletedFrame());
+            PopSeekPhase(token);
             // 停点：第“目标”帧完成后结束快进；跳转前在暂停时恢复暂停，下一帧的门控即保持在这里。
             if (mSeek.OnFrameCompleted(mSession.GetLastCompletedFrame()))
                 EndSeek(SeekEndReason::Reached, true);
+            token = PushSeekPhase(SeekPhase::Plugin);
             UpdateViewer();
+            PopSeekPhase(token);
         }
     }
 
@@ -317,6 +343,8 @@ public:
     {
         if (!IsPlayback())
             return false;
+        // 快进计时：本帧录制事件的执行单独成段，返回后到帧完成为帧尾。
+        MarkSeekPhase(SeekPhase::Events);
         if (!mIsStarted)
         {
             if (!mGame.IsWorldReady() || !Start())
@@ -328,6 +356,7 @@ public:
         mGame.DiscardLocalCommands();
         mSession.ProcessPlaybackFrame();
         ReportFailure(mSession.GetState() != replay::ReplayState::Failed);
+        MarkSeekPhase(SeekPhase::Tail);
         return true;
     }
 
@@ -489,8 +518,10 @@ private:
             return;
         const bool wasPaused = mSession.GetState() == replay::ReplayState::Paused;
         const std::uint32_t fromFrame = mSession.GetLastCompletedFrame();
-        if (!mSeek.Begin(fromFrame, targetFrame, wasPaused, GetSteadyNowMs()))
+        if (!mSeek.Begin(fromFrame, targetFrame, wasPaused, GetSteadyNowMs(), ReadHudPresentedAtMs()))
             return;
+        // 诊断从这里清零；阶段计时在下一个主循环阶段边界开始。
+        mSeekProfile.Reset();
         if (wasPaused)
             mSession.SetPaused(false);
         MuteAudioForSeek();
@@ -509,17 +540,26 @@ private:
     }
 
     /**
-     * 结束快进的唯一入口；不在快进中时什么也不做。恢复声音，请求一次完整重绘，按结果恢复跳转前的暂停状态，写结束日志。
-     * canRequestRedraw 为假用于失败与会话收尾：回放随即结束，世界可能正在拆除，只恢复声音。
+     * 结束快进的唯一入口；不在快进中时什么也不做。canRequestRedraw 为真时先清理不画期间的积压（含仍挂在物体上的尾迹、
+     * 雷达事件与屏震），再请求一次完整重绘（半黑幕开启时另登记整视口脏矩形）；然后恢复声音，按结果恢复跳转前的暂停状态，
+     * 写结束日志与分阶段计时日志。canRequestRedraw 为假用于失败与会话收尾：回放随即结束，世界可能正在拆除，
+     * 不清理、不请求重绘，只恢复声音。
      */
     void EndSeek(SeekEndReason reason, bool canRequestRedraw) noexcept
     {
-        const auto outcome = mSeek.End(reason, GetSteadyNowMs());
+        if (!mSeek.IsActive())
+            return;
+        if (canRequestRedraw)
+        {
+            CleanSeekBacklog(SeekCleanupPoint::SeekEnd);
+            RequestSeekRedraw();
+        }
+        const auto now = std::chrono::steady_clock::now();
+        mSeekProfile.GetClock().Stop(now);
+        const auto outcome = mSeek.End(reason, ToSteadyMs(now));
         if (!outcome)
             return;
         RestoreAudioAfterSeek();
-        if (canRequestRedraw)
-            mGame.RequestFullRedraw();
         if (outcome->mPausedToRestore.value_or(false))
             mSession.SetPaused(true);
         const std::uint32_t frames = outcome->mLastCompletedFrame > outcome->mStartFrame
@@ -532,6 +572,8 @@ private:
             GetSeekEndReasonName(outcome->mReason), outcome->mStartFrame, outcome->mTargetFrame,
             outcome->mLastCompletedFrame, frames, static_cast<long long>(outcome->mElapsedMs), fps);
         Log(message);
+        try { Log(mSeekProfile.FormatTimingLog(frames).c_str()); }
+        catch (...) { Log("Replay seek timing unavailable"); }
     }
 
     /** 会话已转为结束或失败而快进仍在：以对应原因结束快进（失败的回放随即结束，不请求重绘）。 */
@@ -547,19 +589,72 @@ private:
     }
 
     /**
-     * 快进中门控：距上次绘制满 100 ms 时先请求完整重绘（清掉不画期间积压的渲染簿记），再照常绘制；
-     * 其余帧不绘制。不在快进中时照常绘制。
+     * 快进中门控：默认一律不绘制，画面由 HUD 自己的呈现刷新进度。只有当前会话的 HUD 呈现心跳超时或不存在时，
+     * 按兜底节拍先清理积压、请求完整重绘，再照常绘制一次。不在快进中时照常绘制。
      */
     ViewerLoopAction GetSeekDrawAction() noexcept
     {
         if (!mSeek.IsActive())
             return ViewerLoopAction::Continue;
         const std::int64_t nowMs = GetSteadyNowMs();
-        if (!mSeek.ShouldDraw(nowMs))
+        if (!mSeek.ShouldDrawFallback(nowMs, ReadHudPresentedAtMs()))
             return ViewerLoopAction::ContinueWithoutDraw;
-        mGame.RequestFullRedraw();
-        mSeek.MarkDrawn(nowMs);
+        CleanSeekBacklog(SeekCleanupPoint::BeforeFallbackDraw);
+        RequestSeekRedraw();
+        mSeek.MarkFallbackDrawn(nowMs);
+        mSeekProfile.RecordFallbackDraw();
         return ViewerLoopAction::Continue;
+    }
+
+    // 当前会话的 HUD 呈现心跳（单调时钟毫秒）；F10 隐藏、界面未呈现或换会话时为空。
+    std::optional<std::int64_t> ReadHudPresentedAtMs() const noexcept
+    {
+        const auto presentedAt = mViewing.ReadHudPresentedAt();
+        if (!presentedAt)
+            return std::nullopt;
+        return ToSteadyMs(*presentedAt);
+    }
+
+    /**
+     * 快进中的积压清理，只在快进期间、绘制之外调用（帧完成点、兜底重绘前的门控、结束快进时）：先记下各条数的峰值，
+     * 再按时机与阈值清理，耗时计入清理阶段。
+     */
+    void CleanSeekBacklog(SeekCleanupPoint point) noexcept
+    {
+        const auto token = PushSeekPhase(SeekPhase::Cleanup);
+        const auto counts = mGame.ReadSeekBacklogCounts();
+        mSeekProfile.ObserveBacklog(counts);
+        mSeekProfile.RecordCleanup(mGame.CleanSeekBacklog(PlanSeekBacklogCleanup(point, counts)));
+        PopSeekPhase(token);
+    }
+
+    // 清理之后请求完整重绘；脏矩形已清零，半黑幕开启时补登记整视口脏矩形，遮罩随完整重绘重新生成。
+    void RequestSeekRedraw() noexcept
+    {
+        mGame.RequestFullRedraw();
+        if (ShouldUseHalfShroud())
+            mGame.RegisterViewerShroudFullRedraw();
+    }
+
+    // ---- 快进分阶段计时：只在快进中读时钟；未开始计时（快进刚开始、尚未到阶段边界）时 Push/Pop 不起作用。----
+
+    void MarkSeekPhase(SeekPhase phase) noexcept
+    {
+        if (mSeek.IsActive())
+            mSeekProfile.GetClock().Enter(phase, std::chrono::steady_clock::now());
+    }
+
+    SeekPhaseClock::Token PushSeekPhase(SeekPhase phase) noexcept
+    {
+        if (!mSeek.IsActive())
+            return std::nullopt;
+        return mSeekProfile.GetClock().Push(phase, std::chrono::steady_clock::now());
+    }
+
+    void PopSeekPhase(SeekPhaseClock::Token token) noexcept
+    {
+        if (token)
+            mSeekProfile.GetClock().Pop(token, std::chrono::steady_clock::now());
     }
 
     // 静音状态由这里持有；game_api 的入口本身不记状态。
@@ -744,6 +839,9 @@ private:
     // 快进状态（纯逻辑）与是否已静音；静音状态只在这里，game_api 的入口不记状态。
     PlaybackSeek mSeek;
     bool mIsAudioMuted = false;
+    // 快进中原生输入更新的降频节拍，以及本次快进的分阶段耗时与积压诊断（每次开始快进时清零）。
+    SeekInputThrottle mSeekInputThrottle;
+    SeekProfile mSeekProfile;
     // 时间表：扫描线程只在回放时启动；结果取出后转成共享的不可变时间轴。
     PlaybackTimelineScan mTimelineScan;
     // 已取出、正等运行时速度的扫描结果（只在 RuntimeGameSpeed 口径下停留）。
@@ -848,6 +946,11 @@ bool OnAfterFrameLoop() noexcept
 bool ShouldUseHalfShroud() noexcept
 {
     return g_Runtime && g_Runtime->ShouldUseHalfShroud();
+}
+
+bool ShouldSkipViewerInputUpdate() noexcept
+{
+    return g_Runtime && g_Runtime->ShouldSkipViewerInputUpdate();
 }
 
 bool ShouldCapturePlayerInputEffect() noexcept

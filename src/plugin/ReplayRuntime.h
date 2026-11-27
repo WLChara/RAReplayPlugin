@@ -13,12 +13,19 @@ bool TryGetPlaybackSeed(std::uint32_t& outSeed) noexcept;
 void OnFrameBegin() noexcept;
 /**
  * VIEWER_LOOP_GATE（MainLoop 内 DrawOnTop 调用处）的处理结果。Continue 照常绘制并继续本帧；
- * ContinueWithoutDraw 只在快进中使用，不调用 DrawOnTop，其余与 Continue 相同；Hold 进入原生保持分支；Exit 结束回放。
+ * ContinueWithoutDraw 只在快进中使用（除兜底重绘外的每一帧），不调用 DrawOnTop，其余与 Continue 相同；
+ * Hold 进入原生保持分支；Exit 结束回放。
  */
 enum class ViewerLoopAction { Continue, Hold, Exit, ContinueWithoutDraw };
 ViewerLoopAction OnViewerLoopGate() noexcept;
 bool OnAfterFrameLoop() noexcept;
 bool ShouldUseHalfShroud() noexcept;
+/**
+ * GScreenClass::GetInputAndUpdate 入口每次调用一次，只在游戏线程。快进中、且距上次完整执行不到 SEEK_INPUT_TICK_MS 时
+ * 返回 true：Hook 替它写出“无按键”后直接返回，不进入观看输入范围。其余情况返回 false（照常执行），快进中并记下这次完整执行的时刻。
+ * 没有回放或不在快进中时总是 false，也不读时钟。不抛异常。
+ */
+bool ShouldSkipViewerInputUpdate() noexcept;
 void OnBeforeSimulation() noexcept;
 bool ShouldCapturePlayerInputEffect() noexcept;
 void OnPlayerInputEffectCaptured(const replay::RecordedInputEffect& effect) noexcept;

@@ -15,12 +15,49 @@ namespace
 {
 constexpr float FPS_WIDTH = 258.0f;
 constexpr float FOOTER_HEIGHT = 106.0f;
+constexpr char SEEKING_LABEL[] = "快进中";
+// “快进中”标签的内边距（100% 档）与半透明背景（与 HUD 窗口同色，降低不透明度，透出下面停住的画面）。
+constexpr float SEEKING_LABEL_PADDING_X = 24.0f;
+constexpr float SEEKING_LABEL_PADDING_Y = 12.0f;
+constexpr ImVec4 SEEKING_LABEL_BACKGROUND(0.105f, 0.125f, 0.118f, 0.72f);
 
 void RecordWindowRegion(std::vector<UiRect>& regions)
 {
     const ImVec2 position = ImGui::GetWindowPos();
     const ImVec2 size = ImGui::GetWindowSize();
     regions.push_back({position.x, position.y, position.x + size.x, position.y + size.y});
+}
+
+/**
+ * 快进中战场不重绘，在地图区（侧栏面板左缘、底栏上缘以内）正中显示“快进中”：当前字体，半透明背景，不拦截输入。
+ * mapRight 与 footerTop 相对 origin；返回标签窗口矩形（主视口客户区坐标），窗口也记入 visibleRegions。
+ */
+UiRect DrawSeekingLabel(const ImVec2& origin, float mapRight, float footerTop, float scale,
+                        std::vector<UiRect>& visibleRegions)
+{
+    const ImVec2 textSize = ImGui::CalcTextSize(SEEKING_LABEL);
+    const ImVec2 padding(std::round(SEEKING_LABEL_PADDING_X * scale), std::round(SEEKING_LABEL_PADDING_Y * scale));
+    const ImVec2 size(std::ceil(textSize.x) + 2.0f * padding.x, std::ceil(textSize.y) + 2.0f * padding.y);
+    const float left = std::max(0.0f, std::round((mapRight - size.x) * 0.5f));
+    const float top = std::max(0.0f, std::round((footerTop - size.y) * 0.5f));
+    ImGui::SetNextWindowPos(ImVec2(origin.x + left, origin.y + top));
+    ImGui::SetNextWindowSize(size);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, SEEKING_LABEL_BACKGROUND);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, padding);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                   ImGuiWindowFlags_NoInputs;
+    UiRect rect{origin.x + left, origin.y + top, origin.x + left + size.x, origin.y + top + size.y};
+    if (ImGui::Begin("快进中##ReplaySeekingLabel", nullptr, flags))
+    {
+        RecordWindowRegion(visibleRegions);
+        rect = visibleRegions.back();
+        ImGui::TextUnformatted(SEEKING_LABEL);
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    return rect;
 }
 
 // 半径与内边距随 HUD 缩放，其余样式尺寸由 ApplyStyleScale 统一缩放。
@@ -68,6 +105,7 @@ void ReplayHud::Draw(const viewer::ReplayViewSnapshot& snapshot, viewer::ReplayV
     mRadarBarRect.reset();
     mZoomControlRects.reset();
     mSeekBarRects = SeekBarRects();
+    mSeekingLabelRect.reset();
     mDrawnMarkCount = 0;
     mIsSidebarPanelCovering = false;
     if (mSessionId != snapshot.mSessionId)
@@ -191,6 +229,10 @@ void ReplayHud::Draw(const viewer::ReplayViewSnapshot& snapshot, viewer::ReplayV
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
 
+    // 快进中战场停在原处，中央的“快进中”说明画面没有在更新；它在提示栏与经济大窗口之下，F10 隐藏时随 HUD 一起不画。
+    if (seekModel.mIsSeeking)
+        mSeekingLabelRect = DrawSeekingLabel(origin, mapRight, footer.mTop, mScale, mVisibleRegions);
+
     // 雷达事件提示栏在地图区左侧中部，位于经济大窗口之下：两者重叠时大窗口盖住提示栏。
     RadarBarLayoutInput radarLayout;
     radarLayout.mDisplayWidth = extent.x;
@@ -238,6 +280,7 @@ void ReplayHud::Reset()
     mZoomControlRects.reset();
     mSeekBarRects = SeekBarRects();
     mSeekBar = SeekBarState();
+    mSeekingLabelRect.reset();
     mDrawnMarkCount = 0;
     mIsSidebarPanelCovering = false;
     mAppliedStyleScale = 0.0f;

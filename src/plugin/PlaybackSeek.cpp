@@ -2,8 +2,17 @@
 
 namespace rareplay::plugin
 {
+namespace
+{
+// 心跳为空，或距今已超过 SEEK_HUD_STALE_MS；心跳晚于 now（另一线程刚写入）时算新鲜。
+bool IsHudStale(std::int64_t nowMs, std::optional<std::int64_t> hudPresentedAtMs) noexcept
+{
+    return !hudPresentedAtMs || nowMs - *hudPresentedAtMs > SEEK_HUD_STALE_MS;
+}
+}
+
 bool PlaybackSeek::Begin(std::uint32_t lastCompletedFrame, std::uint32_t targetFrame, bool wasPaused,
-    std::int64_t nowMs) noexcept
+    std::int64_t nowMs, std::optional<std::int64_t> hudPresentedAtMs) noexcept
 {
     if (mIsActive || targetFrame <= lastCompletedFrame)
         return false;
@@ -13,7 +22,9 @@ bool PlaybackSeek::Begin(std::uint32_t lastCompletedFrame, std::uint32_t targetF
     mLastCompletedFrame = lastCompletedFrame;
     mWasPaused = wasPaused;
     mBeginMs = nowMs;
-    mLastDrawMs = nowMs;
+    mLastFallbackDrawMs.reset();
+    if (!IsHudStale(nowMs, hudPresentedAtMs))
+        mLastFallbackDrawMs = nowMs;
     return true;
 }
 
@@ -34,15 +45,17 @@ bool PlaybackSeek::OnFrameCompleted(std::uint32_t lastCompletedFrame) noexcept
     return mLastCompletedFrame >= mTargetFrame;
 }
 
-bool PlaybackSeek::ShouldDraw(std::int64_t nowMs) const noexcept
+bool PlaybackSeek::ShouldDrawFallback(std::int64_t nowMs, std::optional<std::int64_t> hudPresentedAtMs) const noexcept
 {
-    return mIsActive && nowMs - mLastDrawMs >= SEEK_DRAW_INTERVAL_MS;
+    if (!mIsActive || !IsHudStale(nowMs, hudPresentedAtMs))
+        return false;
+    return !mLastFallbackDrawMs || nowMs - *mLastFallbackDrawMs >= SEEK_FALLBACK_DRAW_INTERVAL_MS;
 }
 
-void PlaybackSeek::MarkDrawn(std::int64_t nowMs) noexcept
+void PlaybackSeek::MarkFallbackDrawn(std::int64_t nowMs) noexcept
 {
     if (mIsActive)
-        mLastDrawMs = nowMs;
+        mLastFallbackDrawMs = nowMs;
 }
 
 float PlaybackSeek::GetProgress() const noexcept
@@ -77,5 +90,18 @@ viewer::PlaybackSeekView PlaybackSeek::GetView() const noexcept
     view.mStartFrame = mStartFrame;
     view.mTargetFrame = mTargetFrame;
     return view;
+}
+
+bool SeekInputThrottle::ShouldSkip(bool isSeeking, std::int64_t nowMs) noexcept
+{
+    if (!isSeeking)
+    {
+        mLastFullRunMs.reset();
+        return false;
+    }
+    if (mLastFullRunMs && nowMs >= *mLastFullRunMs && nowMs - *mLastFullRunMs < SEEK_INPUT_TICK_MS)
+        return true;
+    mLastFullRunMs = nowMs;
+    return false;
 }
 }

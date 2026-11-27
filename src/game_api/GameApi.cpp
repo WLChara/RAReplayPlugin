@@ -459,4 +459,10 @@ void GameApi::ClearFrameBudgets() noexcept { native::ClearFrameBudgets(); }
 void GameApi::RequestFullRedraw() noexcept { native::RequestFullRedraw(); }
 void GameApi::MuteAudioForSeek() noexcept { native::MuteAudioForSeek(); }
 void GameApi::RestoreAudioAfterSeek() noexcept { native::RestoreAudioAfterSeek(); }
+native::SeekBacklogCounts GameApi::ReadSeekBacklogCounts() const noexcept { return native::ReadSeekBacklogCounts(); }
+native::SeekBacklogCleanupResult GameApi::CleanSeekBacklog(const native::SeekBacklogCleanup& cleanup) noexcept
+{
+    return native::CleanSeekBacklog(cleanup);
+}
+void GameApi::RegisterViewerShroudFullRedraw() noexcept { native::RegisterViewerShroudFullRedraw(); }
 }

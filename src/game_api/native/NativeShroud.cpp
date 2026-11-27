@@ -57,6 +57,11 @@ const std::uint8_t* GetViewerShroudPixels(std::uintptr_t nativeFrame,
 void InvalidateViewerShroud()
 {
     g_ShroudCache.Clear();
+    RegisterViewerShroudFullRedraw();
+}
+
+void RegisterViewerShroudFullRedraw() noexcept
+{
     // 与原生 ABuffer 使用同一 ViewBounds 原点；true 要求重新生成遮罩显示缓冲。
     if (TacticalClass::Instance && DSurface::ViewBounds.Width > 0 && DSurface::ViewBounds.Height > 0)
         TacticalClass::Instance->RegisterDirtyArea(DSurface::ViewBounds, true);

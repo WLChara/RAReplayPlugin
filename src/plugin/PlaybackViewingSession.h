@@ -14,6 +14,7 @@
 #include "../viewer/ReplayViewModel.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -90,8 +91,8 @@ public:
 
     /**
      * SidebarClass::Draw 跳过点每次调用一次；返回 RedrawNative 时已置原生重画标志。
-     * 快进中（isSeeking）画面只按节拍绘制，HUD 呈现间隔可能接近心跳超时：只要本会话的面板心跳仍在（未因 F10 或位置不确定撤回），
-     * 就按刚呈现处理，不让侧栏在跳过与原生之间来回切换。
+     * 快进中（isSeeking）画面不绘制或只按兜底节拍绘制，HUD 呈现间隔可能超过心跳超时：只要本会话的面板心跳仍在
+     * （未因 F10 或位置不确定撤回），就按刚呈现处理，不让侧栏在跳过与原生之间来回切换。
      */
     NativeSidebarAction UpdateNativeSidebar(bool isPlaybackViewActive, bool isSeeking) noexcept;
 
@@ -121,6 +122,12 @@ public:
      */
     void ApplyHudScale(viewer::HudScaleSetting setting);
     void CenterOnRadarEvent(std::uint64_t eventId) noexcept;
+
+    /**
+     * 本会话的 HUD 最近一次实际呈现的时刻（渲染线程的心跳，取自 steady_clock）；F10 隐藏、界面未呈现或换会话时为空。
+     * 快进的兜底重绘据此判断画面是否仍在刷新。
+     */
+    std::optional<std::chrono::steady_clock::time_point> ReadHudPresentedAt() const noexcept;
 
 private:
     std::optional<viewer::HudPresence> ReadCurrentHudPresence() const noexcept;

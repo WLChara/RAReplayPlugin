@@ -6,6 +6,7 @@
 #include "capture/DispatchEventCapture.h"
 #include "capture/EventCaptureDiagnostics.h"
 #include "control_groups/ControlGroupRecorder.h"
+#include "native/NativeSeekBacklog.h"
 
 
 namespace rareplay::game_api
@@ -71,6 +72,11 @@ public:
     void RequestFullRedraw() noexcept;
     void MuteAudioForSeek() noexcept;
     void RestoreAudioAfterSeek() noexcept;
+    // 快进中不绘制时的渲染簿记积压，语义见 native/NativeSeekBacklog.h；只在快进期间、绘制与模拟之外调用。
+    native::SeekBacklogCounts ReadSeekBacklogCounts() const noexcept;
+    native::SeekBacklogCleanupResult CleanSeekBacklog(const native::SeekBacklogCleanup& cleanup) noexcept;
+    /** 半黑幕开启时，在快进后的完整重绘前登记整视口脏矩形；不清显示副本。 */
+    void RegisterViewerShroudFullRedraw() noexcept;
 
 private:
     /**

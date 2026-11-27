@@ -182,4 +182,10 @@ void RestoreAudioAfterSeek() noexcept
     SetVolumeRamp(target::VOICE_VOLUME_RAMP, ToRampVolume(options.VoiceVolume));
     SetVolumeRamp(target::SCORE_VOLUME_RAMP, ToRampVolume(options.MovieVolume));
 }
+
+void WriteNoViewerInputKey(void* outKeyCode) noexcept
+{
+    if (outKeyCode != nullptr)
+        *static_cast<volatile std::uint32_t*>(outKeyCode) = 0;
+}
 }

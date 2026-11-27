@@ -36,7 +36,7 @@ bool DrawZoomButton(const char* label, bool isEnabled, const ImVec2& size, UiRec
 std::optional<ZoomControlRects> DrawBattlefieldZoomControls(const viewer::ReplayViewSnapshot& snapshot,
                                                             viewer::ReplayViewExchange& exchange, float scale)
 {
-    // 快进中画面只按节拍刷新，缩放按钮与暂停、半黑幕一同禁用（游戏线程也丢弃这些命令）。
+    // 快进中战场不重绘，缩放按钮与暂停、半黑幕一同禁用（游戏线程也丢弃这些命令）。
     const ZoomControlModel model = BuildZoomControlModel(snapshot.mBattlefieldZoom,
         snapshot.mActive && !snapshot.mPlaybackControls.mSeek.mIsSeeking);
     if (model.mMode == ZoomControlMode::Hidden)

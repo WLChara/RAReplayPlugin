@@ -134,6 +134,9 @@ public:
     /** 本次 Draw 中底栏进度条与“取消”按钮的位置；底栏未绘制时两者都为空。 */
     const SeekBarRects& GetSeekBarRects() const noexcept { return mSeekBarRects; }
 
+    /** 本次 Draw 中地图区正中“快进中”标签的矩形（主视口客户区坐标）；不在快进中或未绘制时为空。 */
+    const std::optional<UiRect>& GetSeekingLabelRect() const noexcept { return mSeekingLabelRect; }
+
     /** 本次 Draw 实际绘制的超武落点图标数（屏幕外与已淡出的不计）。 */
     std::size_t GetDrawnMarkCount() const noexcept { return mDrawnMarkCount; }
 
@@ -192,6 +195,7 @@ private:
     std::optional<ZoomControlRects> mZoomControlRects;
     SeekBarRects mSeekBarRects;
     SeekBarState mSeekBar;
+    std::optional<UiRect> mSeekingLabelRect;
     std::size_t mDrawnMarkCount = 0;
     GameImagePlacement mGameImage;
     bool mIsSidebarPanelCovering = false;

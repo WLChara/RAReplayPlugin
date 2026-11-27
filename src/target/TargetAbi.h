@@ -177,6 +177,49 @@ constexpr double AUDIO_RAMP_VOLUME_SCALE = 16384.0;
 constexpr std::uintptr_t GSCREEN_MARK_NEEDS_REDRAW = 0x4F42F0;
 constexpr int FULL_REDRAW_WITH_SIDEBAR = 2;
 
+// ---- 回放最快跳转：快进中的输入降频与积压清理 ----
+// GScreenClass::GetInputAndUpdate（VIEWER_MOUSE_INPUT_BEGIN，thiscall，栈参数依次为 outKeyCode、outMouseX、outMouseY）的末条指令：
+// 3 字节 retn 0Ch（C2 0C 00）。入口 Hook 处 ESP 指向返回地址，直接跳到这里即按原栈返回调用者并清掉三个参数；入口被覆盖的
+// sub esp,8; push ebp; push esi（83 EC 08 55 56）不执行，也不经过 VIEWER_MOUSE_INPUT_END。MainLoop（0x55D8B4）与
+// RegulateFrameRate（0x55E25C）随后只把键码交给 KeyboardProcess，键码为 0 时它在 0x55DEF2 直接返回，两个鼠标输出不被读取。
+constexpr std::uintptr_t VIEWER_MOUSE_INPUT_SKIP_RETURN = 0x4F43E2;
+// VIEWER_MOUSE_INPUT_BEGIN 处第一个栈参数（outKeyCode，DWORD*）相对 ESP 的偏移。
+constexpr int VIEWER_MOUSE_INPUT_KEY_CODE_STACK = 0x4;
+
+// 原生 DynamicVectorClass 的布局：+0 虚表、+4 Items、+8 Capacity、+0xC IsInitialized、+0xD IsAllocated、+0x10 Count、
+// +0x14 CapacityIncrement（0x4C29E0、0x556A20、0x6D2790 按这些偏移读写）。以下几个全局都是这种向量，只在绘制路径中消费。
+constexpr std::uintptr_t DYNAMIC_VECTOR_ITEMS_OFFSET = 0x4;
+constexpr std::uintptr_t DYNAMIC_VECTOR_COUNT_OFFSET = 0x10;
+// 战术区脏矩形 DynamicVectorClass<DirtyAreaStruct>（每项 20 字节）：TacticalClass::RegisterDirtyArea（0x6D2790）每次登记都与全表
+// 比较合并，只有 TacticalClass::Render（0x6D3D10）消费。
+constexpr std::uintptr_t DIRTY_AREAS = 0xB0CE78;
+// DynamicVectorClass<EBolt*>：每发电击武器一个，只在 Render(2) 的 0x4C2830 按绘制次数过期。
+constexpr std::uintptr_t EBOLT_ARRAY = 0x8A0E88;
+// DynamicVectorClass<RadBeam*>：辐射与地裂光束，只在 Render 的 0x6591B0 按绘制次数过期；没有原生的整体清理函数。
+constexpr std::uintptr_t RADBEAM_ARRAY = 0xB04A60;
+// DynamicVectorClass<LineTrail*>：物体尾迹，拥有者解绑后只在 Render 的 0x556D40 中淡出并删除。
+constexpr std::uintptr_t LINE_TRAIL_ARRAY = 0xABCB78;
+// 雷达事件向量（DynamicVectorClass<RadarEventClass*> 布局），ClearRadarEvents 逐个删除。
+constexpr std::uintptr_t RADAR_EVENT_ARRAY = 0xB04DA8;
+static_assert(DIRTY_AREAS + DYNAMIC_VECTOR_COUNT_OFFSET == 0xB0CE88);
+static_assert(EBOLT_ARRAY + DYNAMIC_VECTOR_COUNT_OFFSET == 0x8A0E98);
+static_assert(RADBEAM_ARRAY + DYNAMIC_VECTOR_ITEMS_OFFSET == 0xB04A64);
+static_assert(RADBEAM_ARRAY + DYNAMIC_VECTOR_COUNT_OFFSET == 0xB04A70);
+static_assert(LINE_TRAIL_ARRAY + DYNAMIC_VECTOR_ITEMS_OFFSET == 0xABCB7C);
+static_assert(LINE_TRAIL_ARRAY + DYNAMIC_VECTOR_COUNT_OFFSET == 0xABCB88);
+static_assert(RADAR_EVENT_ARRAY + DYNAMIC_VECTOR_COUNT_OFFSET == 0xB04DB8);
+// EBolt_DeleteAll：void __cdecl()，retn。逐个清除拥有者 UnitClass+0x6DC 的反向指针并用游戏 operator delete 释放，
+// 然后 Count=0 并释放 Items（Capacity=0、IsAllocated=0；之后新电弧照常按 CapacityIncrement 扩容）。
+constexpr std::uintptr_t EBOLT_DELETE_ALL = 0x4C29E0;
+// ClearRadarEvents：void __cdecl()，retn（入口 push ecx 只作局部槽，不读 ECX）。从尾到头逐个移出并删除全部雷达事件。
+constexpr std::uintptr_t CLEAR_RADAR_EVENTS = 0x65FD50;
+// 游戏的 operator delete：void __cdecl(void*)，调用方 add esp,4 清栈（0x4C2A0C、0x6593CD、0x556DC6）。
+constexpr std::uintptr_t GAME_OPERATOR_DELETE = 0x7C8B3D;
+// GScreenClass::ScreenShakeX/Y（MouseClass::Instance 0x87F7E8 的 +4 与 +8，int），只在 DoBlit（0x4F4780）中衰减。
+constexpr std::uintptr_t SCREEN_SHAKE_X = 0x87F7EC;
+constexpr std::uintptr_t SCREEN_SHAKE_Y = 0x87F7F0;
+static_assert(SCREEN_SHAKE_Y == SCREEN_SHAKE_X + 4);
+
 // ---- 回放战局缩放 ----
 // 以下 Hook 的原字节、相对位移、分支目标、寄存器与栈都经 IDA 对照原生指令逐一核对。
 // 被覆盖范围内都没有相对位移。只做寄存器代入的 Hook 返回下一条指令（*_CONTINUE），其余返回 0 由 Syringe 重放原指令。
