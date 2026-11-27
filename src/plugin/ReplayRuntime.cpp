@@ -2,6 +2,7 @@
 
 #include "Diagnostics.h"
 #include "EventCaptureReporter.h"
+#include "PlaybackRestart.h"
 #include "PlaybackSeek.h"
 #include "PlaybackSeekProfile.h"
 #include "PlaybackTimelineScan.h"
@@ -24,6 +25,8 @@
 #include <exception>
 #include <filesystem>
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 
 namespace rareplay::plugin
@@ -54,11 +57,24 @@ std::int64_t GetSteadyNowMs() noexcept
     return ToSteadyMs(std::chrono::steady_clock::now());
 }
 
+const char* GetRestartSourceName(RestartSource source) noexcept
+{
+    return source == RestartSource::Replay ? "replay" : "backward-seek";
+}
+
+// 技术日志：目标帧为空时写 none。
+std::string FormatRestartTarget(const std::optional<std::uint32_t>& targetFrame)
+{
+    return targetFrame ? std::to_string(*targetFrame) : std::string("none");
+}
+
 /**
  * 游戏线程上唯一的启动请求、领域会话及文件句柄所有者，负责录制与播放的生命周期、帧驱动和观看命令的执行。
  * 观看呈现由成员 mViewing 装配，回放状态在每次调用时传给它。
  * 向前跳转：持有快进状态 mSeek、是否已静音、输入降频节拍与快进诊断累计，以及时间表扫描 mTimelineScan
  * （插件唯一的工作线程，回放源打开后启动，会话结束、失败与退出时停止并 join）。
+ * 进程内重开（同进程重新播放与向后跳转）：持有待重开状态 mRestart 与首次载入时的会话快照；观看命令只记下请求，
+ * 在 GAME_OVER_CALL 执行点做插件收尾、调用原生重开、复位每场状态，本对象本身跨重开存活（不经 OnSessionEnd）。
  */
 class ReplayRuntime
 {
@@ -132,14 +148,8 @@ public:
             return false;
         if (mIsPlaybackSourceOpen)
             return true;
-        std::vector<std::uint8_t> metadata;
         std::string error;
-        if (!mReader.Open(mRequest.mReplayPath.wstring(), target::TARGET_SHA256_BYTES,
-                metadata, error))
-            return Fail(error);
-        if (!storage::MatchesArchiveManifest(mRequest, metadata))
-            return Fail("Replay request manifest differs from archive");
-        if (!mReader.GetSessionInfo(mRecordedInfo, error))
+        if (!OpenPlaybackReader(mReader, &mRecordedInfo, error))
             return Fail(error);
         const auto containerMessage = "Replay source container v" + std::to_string(mReader.GetContainerVersion()) +
             ": logicalStreamBytes=" + std::to_string(mReader.GetLogicalStreamBytes()) +
@@ -156,6 +166,81 @@ public:
         // 时间表在工作线程上扫描，用独立的读取器，输入与上面的 Open 相同；失败只让总帧数保持未知。
         mTimelineScan.Start(mRequest.mReplayPath.wstring(), target::TARGET_SHA256_BYTES);
         return true;
+    }
+
+    /**
+     * 打开回放文件并核对启动请求的清单，读出帧流头；OpenPlaybackSource 与进程内重开（重新打开到第 0 帧）共用。
+     * outInfo 非空时写入帧流头的会话信息。失败时 reader 处于关闭状态并写 error。
+     */
+    bool OpenPlaybackReader(storage::FrameReader& reader, replay::ReplaySessionInfo* outInfo, std::string& error)
+    {
+        std::vector<std::uint8_t> metadata;
+        if (!reader.Open(mRequest.mReplayPath.wstring(), target::TARGET_SHA256_BYTES, metadata, error))
+            return false;
+        replay::ReplaySessionInfo info;
+        if (!storage::MatchesArchiveManifest(mRequest, metadata))
+            error = "Replay request manifest differs from archive";
+        else if (reader.GetSessionInfo(info, error))
+        {
+            if (outInfo != nullptr)
+                *outInfo = info;
+            return true;
+        }
+        reader.Close();
+        return false;
+    }
+
+    /**
+     * 开局载入的预世界等待点（只对播放请求）。第一次：读取会话快照，只读这一次，失败也不重试；战役（GameMode 0）的快照
+     * 不能用于重开，记日志后进程内重开保持不可用。之后每次（进程内重开的载入）：不覆盖快照，只再读一次逐项比对并写一行日志，
+     * 用来核对还原是否正确（载入期间的变换对快照值幂等，正确时应一致）。
+     */
+    void OnScenarioPreworldWait() noexcept
+    {
+        if (!IsPlayback())
+            return;
+        try
+        {
+            if (mHasReadSessionSnapshot)
+            {
+                CheckSessionSnapshotAfterRestart();
+                return;
+            }
+            mHasReadSessionSnapshot = true;
+            mSessionSnapshot = mGame.ReadScenarioSessionSnapshot();
+            if (!mSessionSnapshot)
+            {
+                Log("Replay session snapshot unavailable; in-process restart disabled");
+                return;
+            }
+            const auto& snapshot = *mSessionSnapshot;
+            mCanRestartFromSnapshot = game_api::native::CanRestartFromSnapshot(snapshot);
+            const auto message = "Replay session snapshot recorded: gameMode=" + std::to_string(snapshot.mGameMode) +
+                " maxAhead=" + std::to_string(snapshot.mMaxAhead) + " frameSendRate=" +
+                std::to_string(snapshot.mFrameSendRate) + " maxMaxAhead=" + std::to_string(snapshot.mMaxMaxAhead) +
+                " desiredFrameRate=" + std::to_string(snapshot.mDesiredFrameRate) + " specialFlags=" +
+                std::to_string(snapshot.mSpecialRulesFlags) + " multiplayerObserver=" +
+                std::to_string(snapshot.mMultiplayerObserver) + " scenario=" + snapshot.mScenarioFileName;
+            Log(message.c_str());
+            if (!mCanRestartFromSnapshot)
+                Log("Replay in-process restart unavailable: campaign mode");
+        }
+        catch (...) { Log("Replay session snapshot handling failed"); }
+    }
+
+    void CheckSessionSnapshotAfterRestart()
+    {
+        if (!mSessionSnapshot)
+            return;
+        const auto current = mGame.ReadScenarioSessionSnapshot();
+        if (!current)
+        {
+            Log("Replay session snapshot check after restart: unreadable");
+            return;
+        }
+        const auto differences = game_api::native::DescribeSnapshotDifferences(*mSessionSnapshot, *current);
+        Log(differences.empty() ? "Replay session snapshot check after restart: matches"
+                                : ("Replay session snapshot check after restart: differs " + differences).c_str());
     }
 
     bool TryGetPlaybackSeed(std::uint32_t& outSeed)
@@ -209,18 +294,25 @@ public:
         return ViewerLoopAction::Hold;
     }
 
-    bool AfterFrameLoop()
+    AfterFrameLoopAction AfterFrameLoop()
     {
         if (!mIsStarted || !IsPlayback())
-            return false;
+            return AfterFrameLoopAction::NativeGameOver;
+        // 进程内重开只在这里执行：此时已在 MainLoop 之外，主循环的下一次迭代即新场景的第 0 帧。
+        if (mRestart.IsRequested())
+        {
+            if (const auto action = ExecutePendingRestart())
+                return *action;
+        }
         ReportFailure(mSession.OnAfterFrameLoop());
         // 预取到 EOF 时会话转为结束：快进以“回放结束”结束，停在结束状态。
         SyncSeekWithSession();
         const auto token = PushSeekPhase(SeekPhase::Plugin);
         UpdateViewer();
         PopSeekPhase(token);
-        return mSession.IsPlaybackHeld() || mHasExitRequested ||
+        const bool shouldSkipGameOver = mSession.IsPlaybackHeld() || mHasExitRequested ||
             mSession.GetState() == replay::ReplayState::Failed;
+        return shouldSkipGameOver ? AfterFrameLoopAction::SkipGameOver : AfterFrameLoopAction::NativeGameOver;
     }
 
     void BeforeNativeEvents()
@@ -405,6 +497,7 @@ public:
 
     void FailUnexpected()
     {
+        mRestart.Abandon();
         EndSeek(SeekEndReason::Failed, false);
         mTimelineScan.Stop();
         mViewing.Stop();
@@ -427,6 +520,7 @@ private:
         state.mHasViewFailed = mViewing.HasViewFailed();
         state.mIsHalfShroudEnabled = mViewing.IsHalfShroudEnabled();
         state.mHasTotalFrames = mTotalFrames.has_value();
+        state.mCanRestartFromSnapshot = mCanRestartFromSnapshot;
         return state;
     }
     bool IsRecordingStarted() const noexcept { return plugin::IsRecordingStarted(GetGateState()); }
@@ -452,6 +546,12 @@ private:
                 state.mTotalFrames = mTotalFrames;
                 state.mIsSeeking = mSeek.IsActive();
                 state.mSeekTargetFrame = mSeek.GetTargetFrame();
+                state.mIsPaused = mSession.GetState() == replay::ReplayState::Paused;
+                state.mSeekWasPaused = mSeek.WasPausedBeforeSeek();
+                const auto pendingRestart = mRestart.GetPendingRequest();
+                state.mIsRestartPending = pendingRestart.has_value();
+                if (pendingRestart)
+                    state.mPendingRestartTargetFrame = pendingRestart->mTargetFrame;
                 if (const auto action = RouteViewerCommand(command, state))
                     ExecuteViewerAction(*action);
             }
@@ -470,19 +570,13 @@ private:
             mSession.SetPaused(action.mIsPaused);
             break;
         case ViewerActionKind::RequestRestart:
-            // 先结束快进（恢复声音），再走原有流程；请求失败时回放停在当前位置继续播放。
-            EndSeek(SeekEndReason::Exited, true);
-            if (mViewing.RequestRestart(action.mIsHalfShroudEnabled))
-            {
-                mHasExitRequested = true;
-                mTimelineScan.Stop();
-                mGame.EndReplay();
-            }
+            RequestRestart({RestartSource::Replay, std::nullopt, false}, action.mIsHalfShroudEnabled);
             break;
         case ViewerActionKind::SetHalfShroud:
             mViewing.SetHalfShroudEnabled(action.mIsHalfShroudEnabled);
             break;
         case ViewerActionKind::ExitPlayback:
+            CancelRestartRequest();
             EndSeek(SeekEndReason::Exited, true);
             mHasExitRequested = true;
             mTimelineScan.Stop();
@@ -505,36 +599,231 @@ private:
             if (action.mIsSeekRetarget)
                 RetargetSeek(action.mSeekTargetFrame);
             else
-                BeginSeek(action.mSeekTargetFrame);
+                BeginSeek(action.mSeekTargetFrame, mSession.GetState() == replay::ReplayState::Paused);
+            break;
+        case ViewerActionKind::SeekViaRestart:
+            RequestRestart({RestartSource::BackwardSeek, action.mSeekTargetFrame, action.mIsPausedAfterSeek},
+                mViewing.IsHalfShroudEnabled());
             break;
         case ViewerActionKind::CancelSeek:
+            // 重开尚未执行时撤销请求；正在进行的快进（含重开前就在进行的）停在当前位置。
+            CancelRestartRequest();
             EndSeek(SeekEndReason::Cancelled, true);
             break;
         }
     }
 
+    // ---- 进程内重开 ----
+
+    /**
+     * 观看者请求重开（重新播放或向后跳转）：按 DecideRestart 记下请求（在下一次 GAME_OVER_CALL 执行），
+     * 或者重新播放退回启动器，或者拒绝向后跳转。记下请求时不改变会话与快进：执行点会先结束快进。
+     */
+    void RequestRestart(const RestartRequest& request, bool isHalfShroudEnabled)
+    {
+        switch (DecideRestart(request.mSource, plugin::CanRestartInProcess(GetGateState())))
+        {
+        case RestartDecision::Execute:
+        {
+            // 重开已执行、等待开始播放时不消费观看命令，这里不会被拒绝；仍按返回值处理以免记错日志。
+            if (!mRestart.Request(request))
+                break;
+            const auto message = std::string("Replay in-process restart requested: source=") +
+                GetRestartSourceName(request.mSource) + " from=" +
+                std::to_string(mSession.GetLastCompletedFrame()) + " target=" +
+                FormatRestartTarget(request.mTargetFrame) + " pausedAfter=" +
+                (request.mIsPausedAfterRestart ? "1" : "0");
+            Log(message.c_str());
+            break;
+        }
+        case RestartDecision::FallBackToLauncher:
+            RestartThroughLauncher(isHalfShroudEnabled);
+            break;
+        case RestartDecision::Reject:
+            Log("Replay backward seek ignored: in-process restart is unavailable");
+            break;
+        }
+    }
+
+    // 原有的重新播放：先结束快进（恢复声音），再请求启动器重新播放；请求失败时回放停在当前位置继续播放。
+    void RestartThroughLauncher(bool isHalfShroudEnabled)
+    {
+        CancelRestartRequest();
+        EndSeek(SeekEndReason::Exited, true);
+        if (mViewing.RequestRestart(isHalfShroudEnabled))
+        {
+            mHasExitRequested = true;
+            mTimelineScan.Stop();
+            mGame.EndReplay();
+        }
+    }
+
+    void CancelRestartRequest() noexcept
+    {
+        if (mRestart.Cancel())
+            Log("Replay in-process restart request cancelled");
+    }
+
+    /**
+     * 开始拆除之前放弃本次重开：记日志，回到空闲；重新播放退回启动器重启（已请求退出时不再退回），向后跳转只记日志。
+     * 世界还完整，回放照常继续。
+     */
+    void AbandonRestartBeforeTeardown(const RestartRequest& request, const std::string& reason)
+    {
+        mRestart.Abandon();
+        Log(("Replay in-process restart abandoned before teardown: " + reason).c_str());
+        if (request.mSource == RestartSource::Replay && !mHasExitRequested)
+            RestartThroughLauncher(mViewing.IsHalfShroudEnabled());
+    }
+
+    /**
+     * GAME_OVER_CALL 执行点（主循环两次迭代之间）执行尚未执行的重开请求；没有请求时返回空。
+     * 开始拆除之前依次确认：插件侧前提仍满足（CanRestartInProcess）、原生侧可以重开（CheckScenarioRestartReady：g_GameActive
+     * 等）、新的帧读取器能打开；任何一项不满足都经 AbandonRestartBeforeTeardown 放弃并返回空，回放照常继续。
+     * 开始拆除之后不再有可放弃的失败：任何一步失败都按播放失败处理并退出回放，返回 SkipGameOver。
+     * 成功返回 ScenarioRestarted：新场景停在第 0 帧之前，运行时“尚未开始”，下一帧 OnFrameBegin 再 Start()。
+     */
+    std::optional<AfterFrameLoopAction> ExecutePendingRestart()
+    {
+        const auto request = mRestart.BeginExecution();
+        if (!request)
+            return std::nullopt;
+        if (!plugin::CanRestartInProcess(GetGateState()))
+        {
+            AbandonRestartBeforeTeardown(*request, "preconditions are no longer met");
+            return std::nullopt;
+        }
+        std::string error;
+        if (!mGame.CheckScenarioRestartReady(*mSessionSnapshot, error))
+        {
+            AbandonRestartBeforeTeardown(*request, "the game cannot restart now: " + error);
+            return std::nullopt;
+        }
+        // 帧读取器重新打开到第 0 帧；时间表扫描不重做，总帧数与时间轴沿用。
+        storage::FrameReader reader;
+        if (!OpenPlaybackReader(reader, nullptr, error))
+        {
+            AbandonRestartBeforeTeardown(*request, error);
+            return std::nullopt;
+        }
+        LogRestartBegin(*request);
+        mRestartStartedAtMs = GetSteadyNowMs();
+
+        // 插件收尾：先结束快进（恢复声音；世界随即拆除，不清理积压、不请求重绘），再停观看会话：先停战局缩放回到物理状态，
+        // 再结束发布（撤回 HUD 快照）、统计与雷达，清掉半黑幕缓存。侧栏门控不必显式停：开始播放前回放视图不处于激活，
+        // 新会话的 HUD 也还没呈现，下一次侧栏绘制时门控自行转回原生并请求完整重画。
+        EndSeek(SeekEndReason::Exited, false);
+        mViewing.Stop();
+        // 回到“尚未开始”：重开的载入期间各 Hook 的门控与首次载入相同（载入提速 L1 因此照样生效），
+        // 回放会话回到 Inactive；下一帧 OnFrameBegin 在世界就绪后重新 Start()。不得调用 Stop：它会请求退出回放。
+        // 以下失败都经 Fail：丢弃重开状态，因“尚未开始”记为启动失败，请求退出回放。
+        mIsStarted = false;
+        if (!mSession.ResetForRestart())
+        {
+            Fail("Replay in-process restart failed: the playback session cannot be reset");
+            return AfterFrameLoopAction::SkipGameOver;
+        }
+        game_api::native::ScenarioRestartReport report;
+        const bool isRestarted = mGame.RestartScenarioInProcess(*mSessionSnapshot, report);
+        LogRestartReport(report, isRestarted);
+        if (!isRestarted)
+        {
+            Fail("Replay in-process restart failed: " + report.mError);
+            return AfterFrameLoopAction::SkipGameOver;
+        }
+        // 每场状态：换上位于第 0 帧的读取器，状态摘要从第 0 帧重新记录（读取异常后的停用也只限上一场）。
+        mReader = std::move(reader);
+        mLastStateDigestFrame.reset();
+        mIsStateDigestDisabled = false;
+        return AfterFrameLoopAction::ScenarioRestarted;
+    }
+
+    // 原生重开的诊断：耗时、删除的光束、载入前的 ScenarioInit、连接的删除与重建；失败时在 Fail 的日志之前写。
+    void LogRestartReport(const game_api::native::ScenarioRestartReport& report, bool isRestarted) noexcept
+    {
+        try
+        {
+            const std::int64_t elapsedMs = mRestartStartedAtMs ? GetSteadyNowMs() - *mRestartStartedAtMs : 0;
+            const auto message = std::string(isRestarted ? "Replay in-process restart loaded the scenario"
+                                                         : "Replay in-process restart sequence stopped") +
+                ": elapsedMs=" + std::to_string(elapsedMs) + " radBeams=" + std::to_string(report.mDeletedRadBeams) +
+                " scenarioInitBefore=" + std::to_string(report.mScenarioInitBeforeStart) + " connections=" +
+                (report.mHasRebuiltConnections ? std::to_string(report.mDeletedConnections) + "/" +
+                        std::to_string(report.mRemainingConnections)
+                                               : std::string("untouched"));
+            Log(message.c_str());
+        }
+        catch (...) { Log("Replay in-process restart report unavailable"); }
+    }
+
+    // 重开开始拆除前记一行：请求内容与沿用到重开之后的观看设置（拆除后失败时也能据此核对）。
+    void LogRestartBegin(const RestartRequest& request) noexcept
+    {
+        try
+        {
+            int speed = 0;
+            const bool hasSpeed = mGame.TryGetViewerPlaybackSpeed(speed);
+            const auto zoom = mViewing.GetBattlefieldZoom().GetStatus();
+            const auto message = std::string("Replay in-process restart begins: source=") +
+                GetRestartSourceName(request.mSource) + " from=" + std::to_string(mSession.GetLastCompletedFrame()) +
+                " target=" + FormatRestartTarget(request.mTargetFrame) + " pausedAfter=" +
+                (request.mIsPausedAfterRestart ? "1" : "0") + "; keeps viewerSpeed=" +
+                (hasSpeed ? std::to_string(speed) : std::string("native")) + " zoomIndex=" +
+                std::to_string(zoom.mRequestedIndex) + " halfShroud=" + (mViewing.IsHalfShroudEnabled() ? "1" : "0") +
+                " hudScale=" + std::to_string(static_cast<int>(mViewing.GetHudScale()));
+            Log(message.c_str());
+        }
+        catch (...) { Log("Replay in-process restart begins"); }
+    }
+
+    /**
+     * 重开后开始播放（Start 成功）时调用：取出后续动作。目标帧大于 0 时以重开前保存的暂停状态开始向前跳转，
+     * 快进到达或取消后恢复该状态；不快进（重新播放、目标为 0）或无法开始快进时，按该状态立即暂停或继续。
+     */
+    void ApplyRestartFollowUp()
+    {
+        const auto followUp = mRestart.OnPlaybackStarted();
+        if (!followUp)
+            return;
+        if (mRestartStartedAtMs)
+        {
+            const auto message = "Replay in-process restart ready at frame 0: elapsedMs=" +
+                std::to_string(GetSteadyNowMs() - *mRestartStartedAtMs);
+            Log(message.c_str());
+            mRestartStartedAtMs.reset();
+        }
+        if (followUp->mSeekTargetFrame && BeginSeek(*followUp->mSeekTargetFrame, followUp->mIsPaused))
+            return;
+        if (followUp->mSeekTargetFrame)
+            Log("Replay seek after in-process restart could not start");
+        if (followUp->mIsPaused)
+            mSession.SetPaused(true);
+    }
+
     // ---- 向前跳转 ----
 
     /**
-     * 开始快进：只在可以跳转（CanSeekPlayback：播放或暂停、总帧数已知、观看界面可用）时开始。跳转前在暂停时先解除暂停
-     * （暂停的唯一所有者仍是 ReplaySession::SetPaused），然后静音。目标已由路由夹取并保证在当前位置之后。
+     * 开始快进：只在可以跳转（CanSeekPlayback：播放或暂停、总帧数已知、观看界面可用）时开始，返回是否开始了。
+     * wasPaused 是到达或取消后要恢复的暂停状态：观看命令取当前会话状态，重开后的快进取重开前保存的状态。
+     * 当前在暂停时先解除暂停（暂停的唯一所有者仍是 ReplaySession::SetPaused），然后静音。
+     * 目标已由路由夹取并保证在当前位置之后（重开后的目标大于 0，当前位置为 0）。
      */
-    void BeginSeek(std::uint32_t targetFrame)
+    bool BeginSeek(std::uint32_t targetFrame, bool wasPaused)
     {
         if (!plugin::CanSeekPlayback(GetGateState()))
-            return;
-        const bool wasPaused = mSession.GetState() == replay::ReplayState::Paused;
+            return false;
         const std::uint32_t fromFrame = mSession.GetLastCompletedFrame();
         if (!mSeek.Begin(fromFrame, targetFrame, wasPaused, GetSteadyNowMs(), ReadHudPresentedAtMs()))
-            return;
+            return false;
         // 诊断从这里清零；阶段计时在下一个主循环阶段边界开始。
         mSeekProfile.Reset();
-        if (wasPaused)
+        if (mSession.GetState() == replay::ReplayState::Paused)
             mSession.SetPaused(false);
         MuteAudioForSeek();
         char message[96]{};
         std::snprintf(message, sizeof(message), "Replay seek started: from=%u target=%u", fromFrame, targetFrame);
         Log(message);
+        return true;
     }
 
     void RetargetSeek(std::uint32_t targetFrame) noexcept
@@ -786,9 +1075,12 @@ private:
             PollTimelineScan();
         }
         catch (...) { ReportTimelineUnavailable("exception while taking the scan result"); }
+        // 重开已请求、尚未执行时显示为快进中（可以取消），进度从 0 起；否则显示快进本身的状态。
+        const auto gates = GetGateState();
         const PlaybackViewInput input{IsPlaybackViewActive(), mSession.GetState(), mSession.IsPlaybackHeld(),
-            mSession.GetLastCompletedFrame(), mSession.GetRecordedControlGroups(), mSeek.GetView(),
-            plugin::CanSeekPlayback(GetGateState()), mTotalFrames, mTimeline};
+            mSession.GetLastCompletedFrame(), mSession.GetRecordedControlGroups(),
+            mRestart.GetRequestedView().value_or(mSeek.GetView()), plugin::CanSeekPlayback(gates),
+            plugin::CanRestartInProcess(gates), mTotalFrames, mTimeline};
         mViewing.UpdateViewer(input);
     }
 
@@ -815,10 +1107,19 @@ private:
             return Fail(error.empty() ? mSession.GetLastError() : error);
         }
         mIsStarted = true;
-        Log(IsPlayback() ? "Replay playback started" : "Replay recording started");
+        // 进程内重开之后的开始：观看会话沿用重开前的观看设置，然后执行重开请求的后续动作（快进到目标或按原状态暂停）。
+        const bool isAfterRestart = mRestart.IsAwaitingStart();
+        Log(!IsPlayback() ? "Replay recording started" :
+            isAfterRestart ? "Replay playback started after in-process restart" : "Replay playback started");
         if (!IsPlayback())
             mEventCaptureReporter.ReportContext(mGame.ReadEventCaptureContext());
-        if (IsPlayback())
+        else if (isAfterRestart)
+        {
+            mViewing.BeginAfterRestart(mRequest.mReplayPath, static_cast<int>(mRecordedInfo.mLocalHouseIndex),
+                mSession);
+            ApplyRestartFollowUp();
+        }
+        else
         {
             ReportUnneutralizedOfflineRecording();
             mViewing.Begin(mRequest.mReplayPath, static_cast<int>(mRecordedInfo.mLocalHouseIndex), mSession);
@@ -842,7 +1143,8 @@ private:
 
     bool Fail(const std::string& error)
     {
-        // 快进中失败（含 FailPlayback）：恢复声音；回放随即结束，不请求重绘。
+        // 回放随即结束：丢弃待执行的进程内重开。快进中失败（含 FailPlayback）：恢复声音，不请求重绘。
+        mRestart.Abandon();
         EndSeek(SeekEndReason::Failed, false);
         mTimelineScan.Stop();
         mViewing.Stop();
@@ -892,6 +1194,13 @@ private:
     // 只读状态摘要：上次记录的帧号（同一帧不重复记录），以及读取异常后本场停用。
     std::optional<std::uint32_t> mLastStateDigestFrame;
     bool mIsStateDigestDisabled = false;
+    // 进程内重开：待执行的请求与重开后的后续动作；首次载入时读到的会话快照（播放请求只读一次，读取失败也不重试，
+    // 重开的载入不覆盖）及它能否用于重开（战役不能）；本次重开开始执行的时刻（单调时钟毫秒，开始播放时记录耗时后清空）。
+    PlaybackRestart mRestart;
+    std::optional<game_api::native::ScenarioSessionSnapshot> mSessionSnapshot;
+    bool mHasReadSessionSnapshot = false;
+    bool mCanRestartFromSnapshot = false;
+    std::optional<std::int64_t> mRestartStartedAtMs;
     bool mHasTimelineFailed = false;
     bool mIsStarted = false;
     bool mIsPlaybackSourceOpen = false;
@@ -981,10 +1290,10 @@ ViewerLoopAction OnViewerLoopGate() noexcept
     catch (...) { OnHookFailure(); return ViewerLoopAction::Exit; }
 }
 
-bool OnAfterFrameLoop() noexcept
+AfterFrameLoopAction OnAfterFrameLoop() noexcept
 {
-    try { return g_Runtime && g_Runtime->AfterFrameLoop(); }
-    catch (...) { OnHookFailure(); return true; }
+    try { return g_Runtime ? g_Runtime->AfterFrameLoop() : AfterFrameLoopAction::NativeGameOver; }
+    catch (...) { OnHookFailure(); return AfterFrameLoopAction::SkipGameOver; }
 }
 
 bool ShouldUseHalfShroud() noexcept
@@ -1109,6 +1418,14 @@ bool OnPlaybackParser() noexcept
 {
     try { return g_Runtime && g_Runtime->ProcessPlaybackFrame(); }
     catch (...) { OnHookFailure(); return g_Runtime && g_Runtime->IsPlayback(); }
+}
+
+void OnScenarioPreworldWait() noexcept
+{
+    OnStartup();
+    // 运行时每进程只有一个（启动请求只消费一次），且跨进程内重开存活，所以它的第一次载入就是本进程的第一次载入。
+    if (g_Runtime)
+        g_Runtime->OnScenarioPreworldWait();
 }
 
 bool ShouldBypassPeerProgressWait() noexcept

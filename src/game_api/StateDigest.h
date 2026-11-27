@@ -31,6 +31,9 @@ private:
 /** 场景随机数 250 项表的哈希：逐项按 4 字节小端加入 FNV-1a。 */
 std::uint32_t HashRandomTable(std::span<const std::uint32_t> table) noexcept;
 
+/** 变量值数组（全局 50 项或局部 100 项，每项一个字节）的哈希：按数组顺序逐字节加入 FNV-1a。 */
+std::uint32_t HashVariableValues(std::span<const std::uint8_t> values) noexcept;
+
 /**
  * 每个房屋参与摘要的字段，按声明顺序加入哈希。默认值表示数组中的空指针项，
  * 真实房屋的 ArrayIndex 不为 −1，两者可以区分。
@@ -110,13 +113,16 @@ struct StateDigest
     // 场景标志：特殊规则位（含战争迷雾等）与全局、局部变量的变化标志。
     std::uint32_t mSpecialFlags = 0;
     std::uint8_t mVariablesChanged = 0;
+    // 全局变量值（50 项）与局部变量值（100 项）的哈希（HashVariableValues）；进程内重开须在载入前清零它们。
+    std::uint32_t mGlobalVariablesHash = Fnv1a32::OFFSET_BASIS;
+    std::uint32_t mLocalVariablesHash = Fnv1a32::OFFSET_BASIS;
 };
 
 /**
  * 一行英文技术日志，字段顺序与排版固定，便于用脚本逐行比对：
  * Replay state digest: frame=N rng=Next1/Next2/表哈希/恒定 uid=U houses=数量/哈希
  * objects=单位,步兵,建筑,飞机/四个哈希 session=模式/MaxAhead/FrameSendRate/DesiredFrameRate/时间戳/同步目标帧/DoList
- * flags=特殊规则位/变量变化。哈希与特殊规则位为 8 位小写十六进制，其余为十进制。
+ * flags=特殊规则位/变量变化 vars=全局变量值哈希/局部变量值哈希。哈希与特殊规则位为 8 位小写十六进制，其余为十进制。
  */
 std::string FormatStateDigestLog(const StateDigest& digest);
 }

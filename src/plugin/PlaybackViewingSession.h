@@ -44,6 +44,8 @@ struct PlaybackViewInput
     viewer::PlaybackSeekView mSeek;
     /** 见 RuntimeGates 的 CanSeekPlayback；写进快照的 mCanSeek。 */
     bool mCanSeek = false;
+    /** 见 RuntimeGates 的 CanRestartInProcess；写进快照的 mCanSeekBackward。 */
+    bool mCanSeekBackward = false;
     /** 时间表扫描得出的总帧数与时间轴；扫描未结束或失败时为空。 */
     std::optional<std::uint32_t> mTotalFrames;
     std::shared_ptr<const viewer::GameTimeline> mTimeline;
@@ -72,8 +74,18 @@ public:
         replay::ReplaySession& session);
 
     /**
-     * 回放结束、失败或意外异常时的观看收尾，录制时也调用：交还原生提示，停用战局缩放（写回物理视口、释放逻辑资源），
-     * 结束发布、统计与雷达，清掉观看者黑幕。发布器结束时的异常向调用方抛出。
+     * 进程内重开后开始播放时调用（代替 Begin）：不重新初始化观看通道、不重读 HUD 设置，半黑幕开关与 HUD 缩放沿用
+     * 重开前的值（半黑幕开启时令新世界的遮罩重新生成）；启用战局缩放并恢复重开前请求的档位；然后与 Begin 相同地
+     * 开始发布（新的会话 ID，界面随之清空图标纹理）、统计（重新登记为 session 的帧观察者）与雷达，三者都从零开始。
+     * 观看调速由 GameApi 持有，本来就跨重开沿用。异常处理同 Begin。
+     */
+    void BeginAfterRestart(const std::filesystem::path& replayPath, int recordedLocalHouseIndex,
+        replay::ReplaySession& session);
+
+    /**
+     * 回放结束、失败、意外异常或进程内重开前的观看收尾，录制时也调用：交还原生提示，停用战局缩放（写回物理视口、
+     * 释放逻辑资源；记下请求的档位供重开后恢复），结束发布（撤回 HUD 快照，清空图标缓存）、统计与雷达，
+     * 清掉观看者黑幕的缓存。发布器结束时的异常向调用方抛出。
      */
     void Stop();
 
@@ -130,6 +142,9 @@ public:
     std::optional<std::chrono::steady_clock::time_point> ReadHudPresentedAt() const noexcept;
 
 private:
+    /** Begin 与 BeginAfterRestart 共用：开始发布、统计（并登记为帧观察者）与雷达；异常只停用界面。 */
+    void BeginPresentation(const std::filesystem::path& replayPath, int recordedLocalHouseIndex,
+        replay::ReplaySession& session) noexcept;
     std::optional<viewer::HudPresence> ReadCurrentHudPresence() const noexcept;
     /** isSeeking 的处理同 UpdateNativeSidebar：心跳仍在即视为 HUD 可见，不看呈现间隔。 */
     void UpdateNativeTooltips(bool isPlaybackViewActive, bool isSeeking) noexcept;

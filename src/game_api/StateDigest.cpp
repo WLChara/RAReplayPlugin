@@ -35,6 +35,13 @@ std::uint32_t HashRandomTable(std::span<const std::uint32_t> table) noexcept
     return hash.GetValue();
 }
 
+std::uint32_t HashVariableValues(std::span<const std::uint8_t> values) noexcept
+{
+    Fnv1a32 hash;
+    hash.AddBytes(values);
+    return hash.GetValue();
+}
+
 void AddHouseDigest(Fnv1a32& hash, const HouseDigestFields& house) noexcept
 {
     hash.AddI32(house.mArrayIndex);
@@ -68,14 +75,14 @@ std::string FormatStateDigestLog(const StateDigest& digest)
     char line[512]{};
     std::snprintf(line, sizeof(line),
         "Replay state digest: frame=%u rng=%d/%d/%08x/%u uid=%u houses=%u/%08x objects=%u,%u,%u,%u/%08x,%08x,%08x,%08x "
-        "session=%u/%d/%d/%d/%d/%d/%d flags=%08x/%u",
+        "session=%u/%d/%d/%d/%d/%d/%d flags=%08x/%u vars=%08x/%08x",
         digest.mFrame, digest.mRandomNext1, digest.mRandomNext2, digest.mRandomTableHash,
         static_cast<unsigned>(digest.mRandomIsConstant), digest.mUniqueIdCounter, digest.mHouseCount, digest.mHouseHash,
         units.mCount, infantry.mCount, buildings.mCount, aircraft.mCount,
         units.mHash, infantry.mHash, buildings.mHash, aircraft.mHash,
         digest.mGameMode, digest.mMaxAhead, digest.mFrameSendRate, digest.mDesiredFrameRate, digest.mTimingTimeStamp,
         digest.mFrameSyncTargetFrame, digest.mDoListCount, digest.mSpecialFlags,
-        static_cast<unsigned>(digest.mVariablesChanged));
+        static_cast<unsigned>(digest.mVariablesChanged), digest.mGlobalVariablesHash, digest.mLocalVariablesHash);
     return line;
 }
 }

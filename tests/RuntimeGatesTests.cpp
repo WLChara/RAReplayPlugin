@@ -176,6 +176,42 @@ void CheckSeekGate()
     }
 }
 
+// 进程内重开：快照已取得、已开始的播放（源已打开、未启动失败）、未请求退出、状态为播放、暂停或结束。
+void CheckRestartInProcessGate()
+{
+    using rareplay::plugin::CanRestartInProcess;
+    for (const bool hasSnapshot : {false, true})
+    {
+        ForEachState([hasSnapshot](RuntimeGateState s) {
+            s.mCanRestartFromSnapshot = hasSnapshot;
+            const bool expected = hasSnapshot && s.mIsStarted && s.mIsPlayback && s.mIsPlaybackSourceOpen &&
+                !s.mHasStartFailed && !s.mHasExitRequested && IsViewable(s.mReplayState);
+            Require(CanRestartInProcess(s) == expected, "In-process restart follows its truth table");
+        });
+    }
+    RuntimeGateState state;
+    state.mIsStarted = true;
+    state.mIsPlayback = true;
+    state.mIsPlaybackSourceOpen = true;
+    state.mReplayState = ReplayState::Ended;
+    Require(!CanRestartInProcess(state), "Without a restartable session snapshot (unreadable or campaign) nothing restarts");
+    state.mCanRestartFromSnapshot = true;
+    Require(CanRestartInProcess(state), "An ended replay can restart in process");
+    // 界面失败与总帧数不影响：重新播放不需要它们。
+    state.mHasViewFailed = true;
+    state.mHasTotalFrames = false;
+    Require(CanRestartInProcess(state), "View failure and an unknown total do not block a restart");
+    // 进程内重开的前提不改变原有的门控：快照标志对其余判定没有影响。
+    ForEachState([](RuntimeGateState s) {
+        auto withSnapshot = s;
+        withSnapshot.mCanRestartFromSnapshot = true;
+        Require(rareplay::plugin::CanSeekPlayback(s) == rareplay::plugin::CanSeekPlayback(withSnapshot) &&
+                    rareplay::plugin::ShouldSkipLoadBlitSleep(s) == rareplay::plugin::ShouldSkipLoadBlitSleep(withSnapshot) &&
+                    rareplay::plugin::IsPlaybackViewActive(s) == rareplay::plugin::IsPlaybackViewActive(withSnapshot),
+            "The snapshot flag only affects the in-process restart gate");
+    });
+}
+
 void CheckHalfShroudIgnoresViewFailure()
 {
     ForEachState([](const RuntimeGateState& s) {
@@ -403,6 +439,7 @@ int main()
         CheckBeforeSimulationGate();
         CheckAircraftShadowNeutralization();
         CheckSeekGate();
+        CheckRestartInProcessGate();
         CheckLoadBlitSleepGate();
         CheckStateDigestSchedule();
         std::cout << "Runtime gate tests passed\n";

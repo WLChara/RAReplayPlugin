@@ -27,7 +27,7 @@ enum class SeekEndReason
     PlaybackEnded,
     /** 快进中回放失败。 */
     Failed,
-    /** 观看者退出或重新播放，执行方先结束快进再走原有流程。 */
+    /** 观看者退出或重新播放、或执行进程内重开，执行方先结束快进再走原有流程。 */
     Exited
 };
 
@@ -91,6 +91,11 @@ public:
 
     bool IsActive() const noexcept { return mIsActive; }
     std::uint32_t GetTargetFrame() const noexcept { return mTargetFrame; }
+    /**
+     * 开始快进前保存的暂停状态（到达或取消后恢复的就是它）；只在快进中有效，不在快进中时为假。
+     * 快进中会话为播放状态，快进中再向后跳转时“跳转前的暂停状态”必须取这个值，而不是当前会话状态。
+     */
+    bool WasPausedBeforeSeek() const noexcept { return mIsActive && mWasPaused; }
     /** 写入快照的快进状态；不在快进中时为默认值。 */
     viewer::PlaybackSeekView GetView() const noexcept;
 

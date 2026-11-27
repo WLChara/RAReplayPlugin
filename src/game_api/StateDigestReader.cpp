@@ -41,6 +41,14 @@ static_assert(offsetof(ScenarioClass, Random) == 0x218);
 // 全局、局部变量的变化标志：SetGlobalVariable（0x689670）等四个设置函数置 1，LogicClass::Update 在 0x55B01D 读取、
 // 0x55B1D8 清零。
 static_assert(offsetof(ScenarioClass, VariablesChanged) == 0x34AA);
+// 变量的值：ClearScenario 0x685354 起按 41 字节步长读写 +0x1CB0 起的 50 个全局变量值；局部变量的 100 个值紧随其后从 +0x24B2 起。
+static_assert(sizeof(Variable) == 41);
+static_assert(offsetof(ScenarioClass, GlobalVariables) + offsetof(Variable, Value) == 0x1CB0);
+static_assert(offsetof(ScenarioClass, LocalVariables) + offsetof(Variable, Value) == 0x24B2);
+constexpr std::size_t GLOBAL_VARIABLE_COUNT = 50;
+constexpr std::size_t LOCAL_VARIABLE_COUNT = 100;
+static_assert(sizeof(ScenarioClass::GlobalVariables) == GLOBAL_VARIABLE_COUNT * sizeof(Variable));
+static_assert(sizeof(ScenarioClass::LocalVariables) == LOCAL_VARIABLE_COUNT * sizeof(Variable));
 // Randomizer::Random（0x65C780）：[+0] 非 0 时返回 0 且不推进；否则以 +4、+8 为下标访问 +0xC 起的表，下标到 250（0xFA）回绕。
 static_assert(offsetof(Randomizer, unknown_00) == 0);
 static_assert(offsetof(Randomizer, Next1) == 4);
@@ -170,6 +178,16 @@ ObjectArrayDigest ReadObjects(const DynamicVectorClass<TObject*>& objects, const
     return {static_cast<std::uint32_t>(objects.Count), hash.GetValue()};
 }
 
+// 只取每项的值字节，按数组顺序；变量名不参与。
+template <std::size_t COUNT>
+std::uint32_t ReadVariableValues(const Variable (&variables)[COUNT]) noexcept
+{
+    std::array<std::uint8_t, COUNT> values{};
+    for (std::size_t index = 0; index < COUNT; ++index)
+        values[index] = static_cast<std::uint8_t>(variables[index].Value);
+    return HashVariableValues(values);
+}
+
 ObjectArrayDigest& At(StateDigest& digest, DigestObjectKind kind) noexcept
 {
     return digest.mObjects[static_cast<std::size_t>(kind)];
@@ -206,6 +224,8 @@ StateDigest ReadStateDigest()
 
     std::memcpy(&digest.mSpecialFlags, &scenario->SpecialFlags, sizeof(digest.mSpecialFlags));
     digest.mVariablesChanged = ReadByte(scenario->VariablesChanged);
+    digest.mGlobalVariablesHash = ReadVariableValues(scenario->GlobalVariables);
+    digest.mLocalVariablesHash = ReadVariableValues(scenario->LocalVariables);
     return digest;
 }
 }

@@ -12,10 +12,12 @@
  */
 namespace rareplay::ui
 {
-/** 当前位置之前的区域不可点时的悬停说明。 */
-inline constexpr char SEEK_BACKWARD_TOOLTIP[] = "向后跳转需要重新加载，下一阶段再做";
-/** 快进中，当前位置与目标之间的区域不可点时的悬停说明。 */
-inline constexpr char SEEK_BEFORE_TARGET_TOOLTIP[] = "快进中只能改到更靠后的位置，要停在这里请先取消";
+/** 当前位置之前的区域不可点（进程内重开不可用，例如战役录像）时的悬停说明。 */
+inline constexpr char SEEK_BACKWARD_TOOLTIP[] = "此录像不能向后跳转";
+/** 快进中，当前位置与目标之间的区域不可点时的悬停说明；当前位置之前与目标之后都可以点。 */
+inline constexpr char SEEK_BEFORE_TARGET_TOOLTIP[] = "这一段正在快进，要停在这里请先取消";
+/** 可以点、但要经进程内重开才能到达的位置（当前位置之前，或重开已请求时的任何位置）的悬停说明。 */
+inline constexpr char SEEK_RELOAD_TOOLTIP[] = "需要重新载入";
 
 /** 进度条上的比例（0 到 1，超出时夹取）对应的帧号，四舍五入到最近的帧；总帧数为 0 时为 0。 */
 std::uint32_t GetFrameAtBarFraction(float fraction, std::uint32_t totalFrames) noexcept;
@@ -39,13 +41,19 @@ struct SeekBarModel
     std::uint32_t mTotalFrames = 0;
     /** 当前位置（最后完成帧）。 */
     std::uint32_t mCurrentFrame = 0;
-    /** 只有大于它的帧可以作为跳转目标：快进中为当前目标，否则为当前位置。 */
+    /** 可以向前跳转（快照 mCanSeek）：大于 mClickableAfterFrame 的帧可作目标。 */
+    bool mCanSeekForward = false;
+    /** 可以向后跳转（快照 mCanSeekBackward）：当前位置之前的帧可作目标，需要重新载入。 */
+    bool mCanSeekBackward = false;
+    /** 向前跳转时只有大于它的帧可以作为目标：快进中为当前目标，否则为当前位置。 */
     std::uint32_t mClickableAfterFrame = 0;
-    /** 快进中：底栏显示状态文字与“取消”，禁用速度、暂停、半黑幕与缩放控件。 */
+    /** 快进中（含进程内重开已请求、尚未执行）：底栏显示状态文字与“取消”，禁用速度、暂停、半黑幕与缩放控件。 */
     bool mIsSeeking = false;
+    /** 进程内重开已请求、尚未执行：除待执行的目标外，任何位置都可改作重开后的目标；进度为 0。 */
+    bool mIsReloading = false;
     std::uint32_t mSeekStartFrame = 0;
     std::uint32_t mSeekTargetFrame = 0;
-    /** 快进进度的整数百分比（向下取整）；不在快进中时为 0。 */
+    /** 快进进度的整数百分比（向下取整）；不在快进中或重开尚未执行时为 0。 */
     int mSeekPercent = 0;
     /**
      * 快进中底栏的状态文字，如“正在跳转到 12:34 … 45%”；目标时间是名义值时附“（名义）”，没有时间轴时为
@@ -55,12 +63,15 @@ struct SeekBarModel
 };
 
 /**
- * 按快照得出进度条的模式与快进状态：快照激活、能力标志为真且总帧数至少 2 时可交互；
- * 总帧数已知但不能跳转（回放结束、已请求退出、运行时尚未提供跳转）时只读。快进状态只在快照激活时显示。
+ * 按快照得出进度条的模式与快进状态：快照激活、向前或向后跳转的能力标志至少一个为真且总帧数至少 2 时可交互；
+ * 总帧数已知但不能跳转（回放结束且不能向后跳转、已请求退出、运行时尚未提供跳转）时只读。快进状态只在快照激活时显示。
  */
 SeekBarModel BuildSeekBarModel(const viewer::ReplayViewSnapshot& snapshot);
 
-/** 帧能否作为跳转目标：可交互、在可点区域之后且不超过最后一帧。 */
+/**
+ * 帧能否作为跳转目标：可交互且不超过最后一帧，并且满足其一：
+ * 重开已请求时不是待执行的目标；当前位置之前且可以向后跳转；可以向前跳转且在可点区域之后。
+ */
 bool CanSeekToFrame(const SeekBarModel& model, std::uint32_t frame) noexcept;
 
 /**
@@ -70,8 +81,9 @@ bool CanSeekToFrame(const SeekBarModel& model, std::uint32_t frame) noexcept;
 std::string FormatSeekPointLabel(const viewer::GameTimeline* timeline, std::uint32_t frame);
 
 /**
- * 悬停或拖动到某帧时的提示：上一行是该点的说明；该帧不能作为目标时，下一行说明原因
- * （当前位置及之前为 SEEK_BACKWARD_TOOLTIP，快进中当前位置与目标之间为 SEEK_BEFORE_TARGET_TOOLTIP）。
+ * 悬停或拖动到某帧时的提示：上一行是该点的说明。下一行：要经进程内重开才能到达的目标为 SEEK_RELOAD_TOOLTIP；
+ * 不能作为目标时说明原因（不能向后跳转时当前位置及之前为 SEEK_BACKWARD_TOOLTIP，快进中当前位置与目标之间为
+ * SEEK_BEFORE_TARGET_TOOLTIP）；其余没有下一行。
  */
 std::string BuildSeekBarTooltip(const SeekBarModel& model, const viewer::GameTimeline* timeline, std::uint32_t frame);
 }

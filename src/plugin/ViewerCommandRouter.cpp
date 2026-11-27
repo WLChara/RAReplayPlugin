@@ -6,8 +6,9 @@ namespace rareplay::plugin
 {
 namespace
 {
-// 快进中不执行的命令（界面同时禁用对应控件）：快进结束时恢复跳转前的暂停状态，期间不接受暂停；
-// 半黑幕、镜头跳转与战局缩放要重绘或移动镜头，而快进期间战场不重绘（只有兜底时每秒一次）。
+// 快进中或进程内重开已请求时不执行的命令（界面同时禁用对应控件）：快进结束与重开后都按跳转前的暂停状态继续，
+// 期间不接受暂停；半黑幕、镜头跳转与战局缩放要重绘或移动镜头，而快进期间战场不重绘（只有兜底时每秒一次），
+// 重开则马上拆除当前世界。
 bool IsBlockedWhileSeeking(viewer::ViewerCommandKind kind) noexcept
 {
     switch (kind)
@@ -23,6 +24,16 @@ bool IsBlockedWhileSeeking(viewer::ViewerCommandKind kind) noexcept
         return false;
     }
 }
+
+// 跳转前的暂停状态：快进中会话是播放状态，必须取快进开始前保存的状态。
+ViewerAction MakeSeekViaRestart(std::uint32_t target, const ViewerRouterState& state) noexcept
+{
+    ViewerAction action;
+    action.mKind = ViewerActionKind::SeekViaRestart;
+    action.mSeekTargetFrame = target;
+    action.mIsPausedAfterSeek = state.mIsSeeking ? state.mSeekWasPaused : state.mIsPaused;
+    return action;
+}
 }
 
 std::optional<ViewerAction> RouteViewerCommand(const viewer::ViewerCommand& command,
@@ -30,7 +41,7 @@ std::optional<ViewerAction> RouteViewerCommand(const viewer::ViewerCommand& comm
 {
     if (command.mSessionId != state.mSessionId)
         return std::nullopt;
-    if (state.mIsSeeking && IsBlockedWhileSeeking(command.mKind))
+    if ((state.mIsSeeking || state.mIsRestartPending) && IsBlockedWhileSeeking(command.mKind))
         return std::nullopt;
     ViewerAction action;
     switch (command.mKind)
@@ -100,7 +111,16 @@ std::optional<ViewerAction> RouteViewerCommand(const viewer::ViewerCommand& comm
             return std::nullopt;
         // 目标与 mFrameNumber 同一单位：停在第 L 帧完成之后，最后一帧是总帧数 − 1。
         const std::uint32_t target = std::min(static_cast<std::uint32_t>(command.mValue), *state.mTotalFrames - 1);
-        if (target <= state.mLastCompletedFrame || (state.mIsSeeking && target <= state.mSeekTargetFrame))
+        // 重开已请求：世界马上要回到开头，任何新目标都只是改写重开后的目标。
+        if (state.mIsRestartPending)
+        {
+            if (state.mPendingRestartTargetFrame == target)
+                return std::nullopt;
+            return MakeSeekViaRestart(target, state);
+        }
+        if (target < state.mLastCompletedFrame)
+            return MakeSeekViaRestart(target, state);
+        if (target == state.mLastCompletedFrame || (state.mIsSeeking && target <= state.mSeekTargetFrame))
             return std::nullopt;
         action.mKind = ViewerActionKind::SeekToFrame;
         action.mSeekTargetFrame = target;
@@ -108,7 +128,7 @@ std::optional<ViewerAction> RouteViewerCommand(const viewer::ViewerCommand& comm
         return action;
     }
     case viewer::ViewerCommandKind::CancelSeek:
-        if (state.mHasExitRequested || !state.mIsSeeking)
+        if (state.mHasExitRequested || (!state.mIsSeeking && !state.mIsRestartPending))
             return std::nullopt;
         action.mKind = ViewerActionKind::CancelSeek;
         return action;

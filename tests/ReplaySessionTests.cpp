@@ -1117,6 +1117,86 @@ void TestVersion5PlaybackAndVersion6Rejection()
     Require(!session.StartRecording(sink) && session.GetState() == ReplayState::Failed && sink.mAborted &&
         session.GetLastError() == "不支持此录制帧流版本", "version 6 recording is rejected");
 }
+
+// 进程内重开：播放、暂停或结束的会话复位后与新会话行为相同，复位本身从不调用 EndReplay；其余状态不复位。
+void TestResetForRestart()
+{
+    {
+        FakeGame game;
+        ReplaySession session(game);
+        Require(!session.ResetForRestart() && session.GetState() == ReplayState::Inactive,
+            "an inactive session is not reset");
+        FakeSink sink;
+        Require(session.StartRecording(sink) && !session.ResetForRestart() &&
+            session.GetState() == ReplayState::Recording && !sink.mAborted, "a recording is never reset");
+    }
+    {
+        FakeGame game;
+        FakeSource source;
+        source.mReadFails = true;
+        ReplaySession session(game);
+        Require(session.StartPlayback(source) && !session.OnFrameBegin() &&
+            session.GetState() == ReplayState::Failed && !session.ResetForRestart() &&
+            session.GetState() == ReplayState::Failed, "a failed playback is not reset");
+    }
+    {
+        FakeGame game;
+        FakeSource source;
+        source.mFrames.resize(1);
+        ReplaySession session(game);
+        Require(session.StartPlayback(source), "playback starts before the stop");
+        session.Stop();
+        Require(session.GetState() == ReplayState::Finished && !session.ResetForRestart(),
+            "a stopped playback is not reset");
+    }
+    const char* const states[] = {"playing", "paused", "ended"};
+    for (const char* state : states)
+    {
+        const std::string name = state;
+        FakeGame game;
+        game.mInfo = OfflineV4Info();
+        game.mGameSpeed = 3;
+        FakeSource source;
+        source.mInfo = OfflineV4Info();
+        source.mFrames = {SpeedFrame(0, 2), SpeedFrame(1, std::nullopt), SpeedFrame(2, std::nullopt)};
+        CountingObserver observer;
+        ReplaySession session(game);
+        session.SetFrameObserver(&observer);
+        Require(session.StartPlayback(source) && PlayFrame(session, game, 0) && PlayFrame(session, game, 1) &&
+            session.TakeInitialGameSpeedDifference().has_value(), (name + ": the first run plays two frames").c_str());
+        if (name == "paused")
+            Require(session.SetPaused(true), "the first run pauses");
+        if (name == "ended")
+            Require(PlayFrame(session, game, 2) && session.GetState() == ReplayState::Ended, "the first run ends");
+
+        Require(session.ResetForRestart(), (name + ": the session resets").c_str());
+        Require(session.GetState() == ReplayState::Inactive && session.GetLastCompletedFrame() == 0 &&
+            !session.GetRecordedControlGroups() && !session.IsPlaybackHeld() && game.mEndCount == 0,
+            (name + ": the reset session is fresh and the game keeps running").c_str());
+        Require(!session.ResetForRestart(), (name + ": a fresh session is not reset again").c_str());
+
+        // 原生重开后帧号回到 0，读取器重新打开到第 0 帧，游戏速度又是开局时的值。
+        FakeSource reopened;
+        reopened.mInfo = OfflineV4Info();
+        reopened.mFrames = {SpeedFrame(0, 2), SpeedFrame(1, std::nullopt)};
+        game.mGameSpeed = 3;
+        const auto executedBefore = game.mExecuted.size();
+        const auto observedBefore = observer.mFrames.size();
+        Require(session.StartPlayback(reopened) && PlayFrame(session, game, 0),
+            (name + ": playback starts again from frame 0").c_str());
+        Require(game.mExecuted.size() == executedBefore + 1 && game.mExecuted.back().mFrameNumber == 0,
+            (name + ": frame 0 executes again").c_str());
+        Require(observer.mFrames.size() == observedBefore,
+            (name + ": the frame observer stays detached until viewing begins again").c_str());
+        const auto difference = session.TakeInitialGameSpeedDifference();
+        Require(difference && difference->mRecorded == 2 && difference->mCurrent == 3,
+            (name + ": the frame 0 speed check runs again").c_str());
+        Require(session.GetLastCompletedFrame() == 0 && session.GetRecordedControlGroups().has_value() &&
+            session.GetState() == ReplayState::Playing, (name + ": frame 0 completes with its groups").c_str());
+        session.Stop();
+        Require(game.mEndCount == 1, (name + ": a later stop ends the game exactly once").c_str());
+    }
+}
 }
 
 int main()
@@ -1142,4 +1222,5 @@ int main()
     TestPlaybackSpeedFailures();
     TestVersion5RecordingSamplesOfflineSpeedOnly();
     TestVersion5PlaybackAndVersion6Rejection();
+    TestResetForRestart();
 }

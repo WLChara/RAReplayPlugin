@@ -550,6 +550,39 @@ void ReplaySession::Stop()
     }
 }
 
+bool ReplaySession::ResetForRestart() noexcept
+{
+    if (!mWasPlayback || (mState != ReplayState::Playing && !IsPlaybackHeld()))
+        return false;
+    // 逐项回到构造后的值；新增成员时必须同步这里（ReplaySessionTests 以“复位后与新会话行为相同”核对）。
+    mSource = nullptr;
+    mSink = nullptr;
+    mFrameObserver = nullptr;
+    mPendingFrame = {};
+    mReadyFrame = {};
+    mCurrentGroups.reset();
+    mProcessedGroupUpdate.reset();
+    mStreamVersion = 2;
+    mGameMode = 0;
+    mLastRecordedGameSpeed.reset();
+    mPlaybackGameSpeed.reset();
+    mInitialGameSpeedDifference.reset();
+    mHasCheckedInitialGameSpeed = false;
+    mNextFrame = 0;
+    mLastProcessedFrame = UINT64_MAX;
+    mState = ReplayState::Inactive;
+    mHasPendingFrame = false;
+    mHasReadyFrame = false;
+    mHasAppliedInputEffects = false;
+    mHasCopiedEvents = false;
+    mWasPlayback = false;
+    mHasEndedGame = false;
+    mHasCompletedPlaybackFrame = false;
+    mLastCompletedFrame = 0;
+    mLastError.clear();
+    return true;
+}
+
 ReplayState ReplaySession::GetState() const noexcept
 {
     return mState;

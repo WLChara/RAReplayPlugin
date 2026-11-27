@@ -25,6 +25,11 @@ struct RuntimeGateState
     bool mIsHalfShroudEnabled = false;
     /** 时间表扫描已给出总帧数；扫描未结束或失败时为假。 */
     bool mHasTotalFrames = false;
+    /**
+     * 首次载入时的会话快照已取得，且可用于进程内重开（game_api 的 CanRestartFromSnapshot：不是战役）；
+     * 重开要用它还原会话标量。
+     */
+    bool mCanRestartFromSnapshot = false;
 };
 
 /** 回放已开始、未请求退出、界面未失败，状态为播放、暂停或结束。 */
@@ -50,6 +55,14 @@ bool IsPlaybackPlaying(const RuntimeGateState& state) noexcept;
  * 界面未失败）、状态为播放或暂停（不含结束），且总帧数已知。快进中状态为播放，所以仍为真，可以改目标。
  */
 bool CanSeekPlayback(const RuntimeGateState& state) noexcept;
+
+/**
+ * 进程内重开（同进程重新播放与向后跳转）的前提，在开始拆除之前判定，也是快照的 mCanSeekBackward：
+ * 首次载入的会话快照已取得且可用于重开（不是战役）；当前是已开始的播放会话（回放源已打开、未启动失败）；未请求退出；
+ * 会话处于播放、暂停或结束（不含失败与已停止）。快进中仍为真。不看界面是否失败与总帧数：
+ * 重新播放不需要它们，向后跳转的目标由路由按总帧数夹取。原生侧的检查（g_GameActive 等）由执行方在拆除前另做。
+ */
+bool CanRestartInProcess(const RuntimeGateState& state) noexcept;
 
 /**
  * BEFORE_SIMULATION 是否交给会话：播放中（写回速度并重演输入效果）或录制进行中（采样游戏速度）。

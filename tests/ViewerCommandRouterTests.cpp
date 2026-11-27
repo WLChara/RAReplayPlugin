@@ -1,5 +1,6 @@
 #include "../src/plugin/ViewerCommandRouter.h"
 
+#include <algorithm>
 #include <climits>
 #include <cstdint>
 #include <iostream>
@@ -77,6 +78,11 @@ struct SimulatedRuntime
     std::vector<bool> mZoomAnchoredAtPointer;
     std::vector<std::uint32_t> mSeekTargets;
     std::vector<bool> mSeekRetargets;
+    // 进程内重开的前提是否满足（执行方按它决定记下请求还是拒绝），以及记下的请求的目标与暂停状态。
+    bool mCanRestartInProcess = true;
+    std::vector<std::uint32_t> mRestartTargets;
+    std::vector<bool> mRestartPausedAfter;
+    int mRestartCancels = 0;
 
     // 退出与重新播放由执行方先结束快进（这是运行时的职责），这里同样模拟。
     void EndSeek()
@@ -85,6 +91,15 @@ struct SimulatedRuntime
             return;
         mState.mIsSeeking = false;
         ++mSeekEnds;
+    }
+
+    void CancelRestart()
+    {
+        if (!mState.mIsRestartPending)
+            return;
+        mState.mIsRestartPending = false;
+        mState.mPendingRestartTargetFrame.reset();
+        ++mRestartCancels;
     }
 
     void Execute(const ViewerAction& action)
@@ -106,6 +121,7 @@ struct SimulatedRuntime
             ++mShroudInvalidations;
             break;
         case ViewerActionKind::ExitPlayback:
+            CancelRestart();
             EndSeek();
             mState.mHasExitRequested = true;
             ++mEndReplayCalls;
@@ -116,7 +132,17 @@ struct SimulatedRuntime
             mState.mIsSeeking = true;
             mState.mSeekTargetFrame = action.mSeekTargetFrame;
             break;
+        case ViewerActionKind::SeekViaRestart:
+            // 记下请求不改变会话与快进（执行点才结束快进）；前提不满足时执行方拒绝。
+            if (!mCanRestartInProcess)
+                break;
+            mRestartTargets.push_back(action.mSeekTargetFrame);
+            mRestartPausedAfter.push_back(action.mIsPausedAfterSeek);
+            mState.mIsRestartPending = true;
+            mState.mPendingRestartTargetFrame = action.mSeekTargetFrame;
+            break;
         case ViewerActionKind::CancelSeek:
+            CancelRestart();
             EndSeek();
             break;
         case ViewerActionKind::SetHudScale:
@@ -340,9 +366,16 @@ void CheckSeekToFrame()
         "Seek is blocked in an empty replay");
 
     const auto state = MakeSeekState(100);
-    for (const int value : {-1, -500, INT_MIN, 0, 50, 99, 100})
+    for (const int value : {-1, -500, INT_MIN, 100})
         Require(!RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, value), state),
-            "Targets not after the last completed frame are dropped: " + std::to_string(value));
+            "Negative targets and the last completed frame are dropped: " + std::to_string(value));
+    for (const int value : {0, 50, 99})
+    {
+        const auto action = RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, value), state);
+        Require(action && action->mKind == ViewerActionKind::SeekViaRestart &&
+                    action->mSeekTargetFrame == static_cast<std::uint32_t>(value),
+            "Targets before the last completed frame go through a restart: " + std::to_string(value));
+    }
     struct TargetCase
     {
         int mValue;
@@ -358,24 +391,31 @@ void CheckSeekToFrame()
             "Seek starts towards the clamped target: " + std::to_string(targetCase.mValue));
     }
 
-    // 已在最后一帧：任何目标夹到最后一帧后都不在当前位置之后。
+    // 已在最后一帧：任何目标夹到最后一帧后都不在当前位置之后，只剩向后跳转。
     const auto atEnd = MakeSeekState(TOTAL_FRAMES - 1);
-    for (const int value : {0, 998, 999, 1'000, INT_MAX})
+    for (const int value : {999, 1'000, INT_MAX})
         Require(!RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, value), atEnd),
-            "No seek from the last frame: " + std::to_string(value));
+            "No forward seek from the last frame: " + std::to_string(value));
+    for (const int value : {0, 998})
+        Require(RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, value), atEnd)->mKind ==
+                    ViewerActionKind::SeekViaRestart,
+            "From the last frame earlier targets go back: " + std::to_string(value));
     // 只有一帧的回放没有可跳转的位置。
     auto single = MakeSeekState(0);
     single.mTotalFrames = 1;
     Require(!RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 3), single), "No seek in a one-frame replay");
 }
 
-// 快进中：只有比当前目标更靠后的目标改目标；其余（含当前位置与目标之间）丢弃。
+// 快进中：比当前目标更靠后的目标改目标；当前位置之前的经重开向后跳转；当前位置到目标之间（含两端）丢弃。
 void CheckSeekWhileSeeking()
 {
     const auto state = MakeSeekState(200, 600);
-    for (const int value : {-1, 100, 200, 201, 400, 599, 600})
+    for (const int value : {-1, 200, 201, 400, 599, 600})
         Require(!RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, value), state),
-            "Targets not after the current target are dropped while seeking: " + std::to_string(value));
+            "Targets from the position to the current target are dropped while seeking: " + std::to_string(value));
+    auto backward = RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 100), state);
+    Require(backward && backward->mKind == ViewerActionKind::SeekViaRestart && backward->mSeekTargetFrame == 100,
+        "A target before the position goes back while seeking");
     auto action = RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 601), state);
     Require(action && action->mKind == ViewerActionKind::SeekToFrame && action->mIsSeekRetarget &&
                 action->mSeekTargetFrame == 601,
@@ -394,6 +434,16 @@ void CheckSeekWhileSeeking()
         "Retarget also needs the total frame count");
 }
 
+// 进程内重开已请求、尚未执行；seekTarget 有值时请求是在快进中发出的（快进仍在进行，等执行点结束）。
+ViewerRouterState MakePendingRestartState(std::uint32_t lastCompleted, std::optional<std::uint32_t> pendingTarget,
+                                          std::optional<std::uint32_t> seekTarget = std::nullopt)
+{
+    ViewerRouterState state = MakeSeekState(lastCompleted, seekTarget);
+    state.mIsRestartPending = true;
+    state.mPendingRestartTargetFrame = pendingTarget;
+    return state;
+}
+
 void CheckCancelSeek()
 {
     for (const int value : {0, 1, -7})
@@ -404,7 +454,107 @@ void CheckCancelSeek()
             "Cancel with an unknown total is dropped");
         const auto action = RouteViewerCommand(MakeCommand(ViewerCommandKind::CancelSeek, value), MakeSeekState(100, 300));
         Require(action && action->mKind == ViewerActionKind::CancelSeek, "Cancel while seeking ignores the value");
+        const auto pending = RouteViewerCommand(MakeCommand(ViewerCommandKind::CancelSeek, value),
+            MakePendingRestartState(500, 40));
+        Require(pending && pending->mKind == ViewerActionKind::CancelSeek,
+            "Cancel revokes a pending restart even without a seek");
     }
+    auto exited = MakePendingRestartState(500, 40);
+    exited.mHasExitRequested = true;
+    Require(!RouteViewerCommand(MakeCommand(ViewerCommandKind::CancelSeek, 0), exited), "Cancel is blocked after exit");
+}
+
+// 向后跳转：目标在最后完成帧之前（含 T=0）经进程内重开；跳转前的暂停状态快进中取快进开始前保存的值。
+void CheckSeekViaRestart()
+{
+    for (const bool isPaused : {false, true})
+    {
+        auto state = MakeSeekState(500);
+        state.mIsPaused = isPaused;
+        for (const int value : {0, 1, 250, 499})
+        {
+            const auto action = RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, value), state);
+            Require(action && action->mKind == ViewerActionKind::SeekViaRestart &&
+                        action->mSeekTargetFrame == static_cast<std::uint32_t>(value) &&
+                        action->mIsPausedAfterSeek == isPaused && !action->mIsSeekRetarget,
+                "A backward target carries the current pause state: " + std::to_string(value));
+        }
+        Require(!RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 500), state),
+            "The last completed frame itself is still dropped");
+        const auto forward = RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 600), state);
+        Require(forward && forward->mKind == ViewerActionKind::SeekToFrame && forward->mSeekTargetFrame == 600,
+            "Later targets still seek forward");
+    }
+
+    // 快进中会话是播放状态：暂停状态取快进开始前保存的，而不是当前的。
+    for (const bool wasPaused : {false, true})
+    {
+        auto seeking = MakeSeekState(300, 800);
+        seeking.mIsPaused = !wasPaused;
+        seeking.mSeekWasPaused = wasPaused;
+        const auto action = RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 120), seeking);
+        Require(action && action->mKind == ViewerActionKind::SeekViaRestart && action->mSeekTargetFrame == 120 &&
+                    action->mIsPausedAfterSeek == wasPaused,
+            "A backward seek during a seek keeps the pause state saved before the seek");
+        const auto zero = RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 0), seeking);
+        Require(zero && zero->mKind == ViewerActionKind::SeekViaRestart && zero->mSeekTargetFrame == 0 &&
+                    zero->mIsPausedAfterSeek == wasPaused,
+            "T=0 during a seek is a backward seek too");
+    }
+
+    // 总帧数未知或已请求退出时与向前跳转一样拦下；负值丢弃。
+    auto unknown = MakeState();
+    unknown.mLastCompletedFrame = 500;
+    Require(!RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 10), unknown),
+        "A backward seek needs the total frame count");
+    Require(!RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 10), MakeSeekState(500, std::nullopt, true)),
+        "A backward seek is blocked after exit");
+}
+
+// 重开已请求、尚未执行：任何不同于待执行目标的新目标都改写它（包括当前位置之后的），相同的丢弃。
+void CheckSeekWhileRestartPending()
+{
+    const auto pending = MakePendingRestartState(500, 40);
+    for (const int value : {0, 39, 41, 499, 500, 501, 5'000})
+    {
+        const auto action = RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, value), pending);
+        const std::uint32_t expected = std::min<std::uint32_t>(static_cast<std::uint32_t>(value), TOTAL_FRAMES - 1);
+        Require(action && action->mKind == ViewerActionKind::SeekViaRestart && action->mSeekTargetFrame == expected,
+            "A new target rewrites the pending restart: " + std::to_string(value));
+    }
+    Require(!RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 40), pending),
+        "The pending target itself is dropped");
+    Require(!RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, -3), pending), "Negative values are dropped");
+
+    // 待执行的是重新播放（没有目标）：第 0 帧也是新的目标（暂停状态可能不同）。
+    const auto replay = MakePendingRestartState(500, std::nullopt);
+    const auto zero = RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 0), replay);
+    Require(zero && zero->mKind == ViewerActionKind::SeekViaRestart && zero->mSeekTargetFrame == 0,
+        "Frame 0 rewrites a pending replay");
+
+    // 请求是在快进中发出的：暂停状态仍取快进开始前保存的。
+    auto duringSeek = MakePendingRestartState(500, 40, 900);
+    duringSeek.mSeekWasPaused = true;
+    const auto action = RouteViewerCommand(MakeCommand(ViewerCommandKind::SeekToFrame, 700), duringSeek);
+    Require(action && action->mKind == ViewerActionKind::SeekViaRestart && action->mSeekTargetFrame == 700 &&
+                action->mIsPausedAfterSeek,
+        "A pending restart from a seek keeps the saved pause state");
+
+    // 与快进中相同地拦下暂停、半黑幕、镜头跳转与缩放；调速、界面缩放、退出与重新播放照常。
+    for (const auto kind : {ViewerCommandKind::SetPaused, ViewerCommandKind::SetHalfShroud,
+             ViewerCommandKind::CenterOnRadarEvent, ViewerCommandKind::AdjustBattlefieldZoom,
+             ViewerCommandKind::AdjustBattlefieldZoomAtCenter, ViewerCommandKind::ResetBattlefieldZoom})
+        Require(!RouteViewerCommand(MakeCommand(kind, 1), pending),
+            "Command " + std::to_string(static_cast<int>(kind)) + " is dropped while a restart is pending");
+    Require(RouteViewerCommand(MakeCommand(ViewerCommandKind::SetPlaybackSpeed, 2), pending)->mKind ==
+                    ViewerActionKind::SetPlaybackSpeed &&
+                RouteViewerCommand(MakeCommand(ViewerCommandKind::SetHudScale, 150), pending)->mKind ==
+                    ViewerActionKind::SetHudScale &&
+                RouteViewerCommand(MakeCommand(ViewerCommandKind::ExitPlayback, 0), pending)->mKind ==
+                    ViewerActionKind::ExitPlayback &&
+                RouteViewerCommand(MakeCommand(ViewerCommandKind::RestartPlayback, 0), pending)->mKind ==
+                    ViewerActionKind::RequestRestart,
+        "Speed, HUD scale, exit and restart are routed while a restart is pending");
 }
 
 // 快进中丢弃暂停、半黑幕、镜头跳转与三种缩放命令；调速、界面缩放、退出与重新播放照常路由。
@@ -475,6 +625,58 @@ void CheckSeekSequences()
             MakeCommand(ViewerCommandKind::RestartPlayback, 0), MakeCommand(ViewerCommandKind::SeekToFrame, 900)});
         Require(runtime.mRestartRequests == 1 && runtime.mSeekEnds == 1 && runtime.mSeekTargets.size() == 1,
             "A successful restart ends the seek and blocks later seeks");
+    }
+}
+
+void CheckBackwardSeekSequences()
+{
+    {
+        // 暂停时向后跳转，执行前再点一次：后一次改写目标，暂停状态都是跳转前的；期间暂停被拦下，取消撤销请求。
+        SimulatedRuntime runtime;
+        runtime.mState = MakeSeekState(600);
+        runtime.mState.mIsPaused = true;
+        runtime.Consume({MakeCommand(ViewerCommandKind::SeekToFrame, 200), MakeCommand(ViewerCommandKind::SetPaused, 0),
+            MakeCommand(ViewerCommandKind::SeekToFrame, 200), MakeCommand(ViewerCommandKind::SeekToFrame, 50),
+            MakeCommand(ViewerCommandKind::CancelSeek, 0), MakeCommand(ViewerCommandKind::CancelSeek, 0),
+            MakeCommand(ViewerCommandKind::SetPaused, 0)});
+        const std::vector<ViewerActionKind> expected{ViewerActionKind::SeekViaRestart, ViewerActionKind::SeekViaRestart,
+            ViewerActionKind::CancelSeek, ViewerActionKind::SetPaused};
+        Require(runtime.mExecuted == expected, "Backward seek, rewrite, cancel and then pause apply in order");
+        Require(runtime.mRestartTargets == std::vector<std::uint32_t>({200, 50}) &&
+                    runtime.mRestartPausedAfter == std::vector<bool>({true, true}),
+            "The rewrite keeps the pause state from before the jump");
+        Require(runtime.mRestartCancels == 1 && !runtime.mState.mIsRestartPending, "One cancel revokes the request");
+    }
+    {
+        // 快进中再次向后：暂停状态取快进开始前保存的；之后退出撤销请求并结束快进。
+        SimulatedRuntime runtime;
+        runtime.mState = MakeSeekState(100);
+        runtime.mState.mIsPaused = true;
+        runtime.Consume({MakeCommand(ViewerCommandKind::SeekToFrame, 700)});
+        // 执行方开始快进时解除暂停，并保存跳转前的暂停状态。
+        runtime.mState.mIsPaused = false;
+        runtime.mState.mSeekWasPaused = true;
+        runtime.mState.mLastCompletedFrame = 400;
+        runtime.Consume({MakeCommand(ViewerCommandKind::SeekToFrame, 300), MakeCommand(ViewerCommandKind::SeekToFrame, 900),
+            MakeCommand(ViewerCommandKind::ExitPlayback, 0), MakeCommand(ViewerCommandKind::SeekToFrame, 10)});
+        const std::vector<ViewerActionKind> expected{ViewerActionKind::SeekToFrame, ViewerActionKind::SeekViaRestart,
+            ViewerActionKind::SeekViaRestart, ViewerActionKind::ExitPlayback};
+        Require(runtime.mExecuted == expected, "Backward during a seek, a rewrite, then exit");
+        Require(runtime.mRestartTargets == std::vector<std::uint32_t>({300, 900}) &&
+                    runtime.mRestartPausedAfter == std::vector<bool>({true, true}),
+            "Both requests carry the pause state saved before the seek");
+        Require(runtime.mRestartCancels == 1 && runtime.mSeekEnds == 1 && runtime.mEndReplayCalls == 1,
+            "Exit revokes the pending restart and ends the seek");
+    }
+    {
+        // 前提不满足（原生入口未实现）：向后跳转被执行方拒绝，回放状态不变，向前跳转照常。
+        SimulatedRuntime runtime;
+        runtime.mCanRestartInProcess = false;
+        runtime.mState = MakeSeekState(500);
+        runtime.Consume({MakeCommand(ViewerCommandKind::SeekToFrame, 100), MakeCommand(ViewerCommandKind::SeekToFrame, 800)});
+        Require(runtime.mRestartTargets.empty() && !runtime.mState.mIsRestartPending &&
+                    runtime.mSeekTargets == std::vector<std::uint32_t>({800}),
+            "A rejected backward seek leaves the replay as it was");
     }
 }
 
@@ -583,9 +785,12 @@ int main()
         CheckSeekToFrame();
         CheckSeekWhileSeeking();
         CheckCancelSeek();
+        CheckSeekViaRestart();
+        CheckSeekWhileRestartPending();
         CheckCommandsWhileSeeking();
         CheckSequences();
         CheckSeekSequences();
+        CheckBackwardSeekSequences();
         std::cout << "Viewer command router tests passed\n";
         return 0;
     }

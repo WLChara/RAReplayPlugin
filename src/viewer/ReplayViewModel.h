@@ -306,6 +306,11 @@ struct PlaybackSeekView
     std::uint32_t mStartFrame = 0;
     /** 目标帧，大于 mStartFrame；只在 mIsSeeking 时有效。 */
     std::uint32_t mTargetFrame = 0;
+    /**
+     * 进程内重开（向后跳转或重新播放）已请求、尚未执行：mIsSeeking 同为真（显示“快进中”、可以取消），mStartFrame 为 0，
+     * mTargetFrame 为重开后要快进到的帧（重新播放为 0），可能小于当前位置；进度按 0 显示。
+     */
+    bool mIsReloading = false;
 };
 
 /**
@@ -335,6 +340,11 @@ struct PlaybackControls
      * 为假时界面只显示只读进度。
      */
     bool mCanSeek = false;
+    /**
+     * 可以向后跳转：进程内重开的前提满足（首次载入的会话快照已取得、回放处于播放、暂停或结束、未失败、未请求退出）。
+     * 为真时进度条当前位置之前的区域可点（需要重新载入），“重新播放”也改走进程内重开，不再要求 mCanRestart。
+     */
+    bool mCanSeekBackward = false;
     PlaybackSeekView mSeek;
 };
 
@@ -432,10 +442,12 @@ struct ReplayViewSnapshot
  *   鼠标不在战术区内时退回战术区中心；
  * - AdjustBattlefieldZoomAtCenter（HUD 的－/＋按钮）的 mValue 同为档数，始终以战术区中心为锚点；
  * - ResetBattlefieldZoom 复原到 1×（以战术区中心为锚点），不看 mValue。
- * 向前跳转：
- * - SeekToFrame 的 mValue 为目标帧 L，与 mFrameNumber 同一单位：快进到第 L 帧完成后停下。游戏线程只接受大于当前
- *   最后完成帧的目标，超过最后一帧的按最后一帧处理；快进中只接受比当前目标更靠后的目标，并直接改目标；
- * - CancelSeek 结束正在进行的快进，停在当前位置，不看 mValue。
+ * 跳转：
+ * - SeekToFrame 的 mValue 为目标帧 L，与 mFrameNumber 同一单位：快进到第 L 帧完成后停下，超过最后一帧的按最后一帧处理。
+ *   目标大于当前最后完成帧时向前快进（快进中只接受比当前目标更靠后的目标，并直接改目标）；小于最后完成帧时向后跳转：
+ *   进程内重开后快进到 L，到达后沿用跳转前的暂停状态（前提不满足时游戏线程忽略）；等于最后完成帧的忽略；
+ * - CancelSeek 结束正在进行的快进，停在当前位置；进程内重开尚未执行时撤销该请求。不看 mValue。
+ * - RestartPlayback 在进程内重开的前提满足时重开到开头并开始播放，否则请求启动器重新播放。
  * 界面在松开进度条时才提交 SeekToFrame，每次拖动只提交一条（命令队列容量有限，满了会丢掉最旧的）。
  * 新命令只能追加在末尾，不得改变已有枚举值。
  */

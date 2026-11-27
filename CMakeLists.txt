@@ -179,7 +179,9 @@ add_library(ReplayGameApi STATIC
     src/game_api/PlayerInputEffects.cpp
     src/game_api/ViewerPlaybackSpeed.cpp
     src/game_api/native/NativeGame.cpp
+    src/game_api/native/NativeScenarioRestart.cpp
     src/game_api/native/NativeSeekBacklog.cpp
+    src/game_api/native/ScenarioSessionSnapshot.cpp
     src/game_api/zoom/BattlefieldZoomAdapter.cpp
     src/game_api/zoom/ZoomFramePlan.cpp)
 target_sources(ReplayGameApi PRIVATE src/game_api/native/NativeShroud.cpp)
@@ -218,6 +220,7 @@ add_library(RAReplayPlugin SHARED
     src/plugin/BattlefieldZoomViewMapping.cpp
     src/plugin/RuntimeGates.cpp
     src/plugin/ViewerCommandRouter.cpp
+    src/plugin/PlaybackRestart.cpp
     src/plugin/PlaybackSeek.cpp
     src/plugin/PlaybackSeekProfile.cpp
     src/plugin/PlaybackTimelineScan.cpp
@@ -290,9 +293,10 @@ if(BUILD_TESTING)
     target_link_libraries(ReplayHudPanelTests PRIVATE ReplayRender user32)
     add_test(NAME ReplayHudPanel COMMAND ReplayHudPanelTests)
 
-    # plugin 没有独立的静态库（源文件直接编进 RAReplayPlugin），以下九项 plugin 逻辑（两个原生门控、
-    # 运行时门控、观看命令路由、快进状态、快进诊断、缩放状态换算、统计摘要与时间表扫描）的测试仍直接编译其源文件；运行时门控、命令路由与
-    # 快进状态只用到 replay、viewer 头文件中的值类型，无需链接对应库；快进诊断只用到 game_api 积压清理头文件中不含 YRpp 的值类型；
+    # plugin 没有独立的静态库（源文件直接编进 RAReplayPlugin），以下十项 plugin 逻辑（两个原生门控、
+    # 运行时门控、观看命令路由、快进状态、进程内重开状态、快进诊断、缩放状态换算、统计摘要与时间表扫描）的测试仍直接编译其源文件；
+    # 运行时门控、命令路由、快进状态与进程内重开状态只用到 replay、viewer 头文件中的值类型，无需链接对应库；
+    # 快进诊断只用到 game_api 积压清理头文件中不含 YRpp 的值类型；
     # 缩放状态换算只用到缩放适配器头文件中不含 YRpp 的状态类型与
     # ReplayZoom 的档位表；统计摘要链接 ReplayStats；时间表扫描（含工作线程）链接 ReplayStorage 与 ReplayStats，用临时目录里写出的
     # 回放验证，不涉及游戏。
@@ -310,6 +314,11 @@ if(BUILD_TESTING)
 
     add_executable(PlaybackSeekTests tests/PlaybackSeekTests.cpp src/plugin/PlaybackSeek.cpp)
     add_test(NAME PlaybackSeek COMMAND PlaybackSeekTests)
+
+    # 进程内重开的待重开状态机与前提判定；路由与门控的配合分别在 ViewerCommandRouter、RuntimeGates 的测试中核对。
+    add_executable(PlaybackRestartTests tests/PlaybackRestartTests.cpp src/plugin/PlaybackRestart.cpp
+        src/plugin/RuntimeGates.cpp)
+    add_test(NAME PlaybackRestart COMMAND PlaybackRestartTests)
 
     add_executable(PlaybackSeekProfileTests tests/PlaybackSeekProfileTests.cpp src/plugin/PlaybackSeekProfile.cpp)
     add_test(NAME PlaybackSeekProfile COMMAND PlaybackSeekProfileTests)
@@ -404,6 +413,12 @@ if(BUILD_TESTING)
     add_executable(ZoomFramePlanTests tests/ZoomFramePlanTests.cpp)
     target_link_libraries(ZoomFramePlanTests PRIVATE ReplayGameApi)
     add_test(NAME ZoomFramePlan COMMAND ZoomFramePlanTests)
+
+    # 进程内重开的会话快照里不含 YRpp 的部分（game_api/native/ScenarioSessionSnapshot：场景文件名的定长数组复制、
+    # 战役不能重开的判定与重开后的快照比对）。
+    add_executable(ScenarioSessionSnapshotTests tests/ScenarioSessionSnapshotTests.cpp)
+    target_link_libraries(ScenarioSessionSnapshotTests PRIVATE ReplayGameApi)
+    add_test(NAME ScenarioSessionSnapshot COMMAND ScenarioSessionSnapshotTests)
 
     add_executable(ReplaySessionTests tests/ReplaySessionTests.cpp)
     target_link_libraries(ReplaySessionTests PRIVATE ReplayDomain)

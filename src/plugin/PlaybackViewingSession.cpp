@@ -28,6 +28,22 @@ void PlaybackViewingSession::Begin(const std::filesystem::path& replayPath, int 
     LoadHudSettings();
     // 缩放只在回放观看时启用；资源在首次离开 1× 时惰性创建，失败只停用缩放。
     mBattlefieldZoom.Begin();
+    BeginPresentation(replayPath, recordedLocalHouseIndex, session);
+}
+
+void PlaybackViewingSession::BeginAfterRestart(const std::filesystem::path& replayPath, int recordedLocalHouseIndex,
+    replay::ReplaySession& session)
+{
+    // 观看通道的初始标志只在首次开始时读取；之后的半黑幕开关是观看者自己的设置。缓存已在 Stop 清空。
+    if (mIsHalfShroudEnabled)
+        mGame.InvalidateViewerShroud();
+    mBattlefieldZoom.BeginWithPreviousZoom();
+    BeginPresentation(replayPath, recordedLocalHouseIndex, session);
+}
+
+void PlaybackViewingSession::BeginPresentation(const std::filesystem::path& replayPath, int recordedLocalHouseIndex,
+    replay::ReplaySession& session) noexcept
+{
     try
     {
         const auto name = replayPath.filename().u8string();
@@ -95,6 +111,7 @@ void PlaybackViewingSession::UpdateViewer(const PlaybackViewInput& input) noexce
         controls.mRestartError = mRestartError;
         controls.mIsHalfShroudEnabled = mIsHalfShroudEnabled;
         controls.mCanSeek = input.mCanSeek;
+        controls.mCanSeekBackward = input.mCanSeekBackward;
         controls.mSeek = input.mSeek;
         mViewPublisher.Publish(override, mGame.CanControlViewerPlaybackSpeed(), controls,
             input.mRecordedGroups, input.mTotalFrames, input.mTimeline, mStatsSession, mRadarSession,

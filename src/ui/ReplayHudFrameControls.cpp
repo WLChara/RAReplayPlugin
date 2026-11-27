@@ -208,11 +208,13 @@ FrameControlRects DrawFrameControls(const viewer::ReplayViewSnapshot& snapshot, 
             status == viewer::PlaybackStatus::Playing ? 1 : 0});
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(!snapshot.mPlaybackControls.mCanRestart || !snapshot.mActive);
+    // 进程内重开可用时“重新播放”不经启动器，不要求启动器支持重新播放。
+    const bool canRestart = snapshot.mPlaybackControls.mCanRestart || snapshot.mPlaybackControls.mCanSeekBackward;
+    ImGui::BeginDisabled(!canRestart || !snapshot.mActive);
     if (ImGui::Button("重新播放"))
         exchange.Submit({snapshot.mSessionId, viewer::ViewerCommandKind::RestartPlayback, 0});
     ImGui::EndDisabled();
-    if (!snapshot.mPlaybackControls.mCanRestart && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    if (!canRestart && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("需要更新启动器并重新打开回放，才能重新播放");
     ImGui::SameLine();
     if (ImGui::Button("退出回放"))

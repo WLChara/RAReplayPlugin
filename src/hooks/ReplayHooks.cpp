@@ -74,8 +74,11 @@ DEFINE_HOOK(0x55DE7E, ReplayFrameCompleteHook, 9)
     return 0;
 }
 
+// 每次开局载入（含进程内重开的载入）经过一次：先让插件在首次载入时记下会话快照（之后的载入只比对），
+// 再决定是否绕过等待其他玩家。
 DEFINE_HOOK(0x684B3E, ReplayPreworldWaitHook, 5)
 {
+    rareplay::plugin::OnScenarioPreworldWait();
     const bool ready = rareplay::plugin::ShouldBypassPeerProgressWait() ||
         rareplay::game_api::native::WaitForPeers();
     R->EAX(static_cast<DWORD>(ready));

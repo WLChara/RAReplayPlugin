@@ -60,6 +60,22 @@ void TestRandomTableHash()
     Require(HashRandomTable(table) != 0x11705379u, "the last table entry takes part in the hash");
 }
 
+// 变量值数组：全为 0（进程内重开在载入前清零后的样子）有固定哈希；任一项变化，哈希都变化，与位置有关。
+void TestVariableValuesHash()
+{
+    std::array<std::uint8_t, 50> globals{};
+    std::array<std::uint8_t, 100> locals{};
+    Require(HashVariableValues(globals) == 0x12152F8Du, "50 zero global values hash to a fixed value");
+    Require(HashVariableValues(locals) == 0xE5464095u, "100 zero local values hash to a fixed value");
+    globals[3] = 1;
+    Require(HashVariableValues(globals) == 0x523844B2u, "a set global variable changes the hash");
+    locals[99] = 1;
+    Require(HashVariableValues(locals) == 0xE4463F02u, "the last local variable takes part in the hash");
+    std::array<std::uint8_t, 50> moved{};
+    moved[4] = 1;
+    Require(HashVariableValues(moved) != 0x523844B2u, "the position of a set variable matters");
+}
+
 HouseDigestFields MakeHouse(std::int32_t index, std::int32_t type, std::int32_t color, std::int32_t balance,
     std::int32_t output, std::int32_t drain, std::uint32_t allies)
 {
@@ -172,9 +188,12 @@ void TestFormat()
     digest.mDoListCount = 3;
     digest.mSpecialFlags = 0x00001040u;
     digest.mVariablesChanged = 1;
+    digest.mGlobalVariablesHash = 0x12152F8Du;
+    digest.mLocalVariablesHash = 0xE4463F02u;
     const std::string expected =
         "Replay state digest: frame=12000 rng=17/241/11705379/0 uid=1012345 houses=4/f9fc4d1e "
-        "objects=37,52,41,0/d98c3bf2,0000abcd,97927a59,811c9dc5 session=5/24/4/60/0/-1/3 flags=00001040/1";
+        "objects=37,52,41,0/d98c3bf2,0000abcd,97927a59,811c9dc5 session=5/24/4/60/0/-1/3 flags=00001040/1 "
+        "vars=12152f8d/e4463f02";
     const std::string actual = FormatStateDigestLog(digest);
     if (actual != expected)
     {
@@ -185,7 +204,8 @@ void TestFormat()
     const std::string defaults = FormatStateDigestLog(StateDigest{});
     Require(defaults ==
             "Replay state digest: frame=0 rng=0/0/811c9dc5/0 uid=0 houses=0/811c9dc5 "
-            "objects=0,0,0,0/811c9dc5,811c9dc5,811c9dc5,811c9dc5 session=0/0/0/0/0/0/0 flags=00000000/0",
+            "objects=0,0,0,0/811c9dc5,811c9dc5,811c9dc5,811c9dc5 session=0/0/0/0/0/0/0 flags=00000000/0 "
+            "vars=811c9dc5/811c9dc5",
         "a default digest formats every field");
 }
 }
@@ -197,6 +217,7 @@ int main()
         TestFnvVectors();
         TestIntegersAreLittleEndianBytes();
         TestRandomTableHash();
+        TestVariableValuesHash();
         TestHouseHash();
         TestObjectHash();
         TestFormat();

@@ -68,6 +68,12 @@ public:
     bool ProcessPlaybackFrame();
     bool Finish();
     void Stop();
+    /**
+     * 进程内重开：播放会话（播放、暂停或结束）回到构造后的 Inactive，之后可再次 StartPlayback，从第 0 帧重新播放。
+     * 与 Stop 不同，不调用 IReplayGame::EndReplay（世界由调用方重开，不退出），也不读写 source（由调用方重新打开）；
+     * 帧观察者同样清空，由下一次开始观看时重新登记。录制、失败、未开始或已停止的会话不变并返回 false。
+     */
+    bool ResetForRestart() noexcept;
     /** 播放时每个帧被成功执行后通知观察者；传空指针取消。观察者须活得比会话长，会话不接管其所有权。 */
     void SetFrameObserver(IReplayFrameObserver* observer) noexcept { mFrameObserver = observer; }
 

@@ -210,6 +210,22 @@ void CheckEndAndRestore()
     Require(!idle.End(SeekEndReason::Cancelled, 0), "ending an idle seek yields nothing");
 }
 
+// 快进中再向后跳转时，跳转前的暂停状态取快进开始前保存的值；不在快进中时为假。
+void CheckPausedBeforeSeek()
+{
+    PlaybackSeek seek;
+    Require(!seek.WasPausedBeforeSeek(), "an idle seek has no saved pause state");
+    for (const bool wasPaused : {false, true})
+    {
+        Require(seek.Begin(10, 500, wasPaused, 0, NO_HUD), "the seek starts");
+        seek.OnFrameCompleted(200);
+        Require(seek.Retarget(800), "the seek is retargeted");
+        Require(seek.WasPausedBeforeSeek() == wasPaused, "retargeting keeps the saved pause state");
+        seek.End(SeekEndReason::Exited, 1'000);
+        Require(!seek.WasPausedBeforeSeek(), "an ended seek forgets the saved pause state");
+    }
+}
+
 // 输入降频：快进中每 16 ms 完整执行一次，其余跳过；不在快进中时总是完整执行，且忘掉上次的时刻。
 void CheckInputThrottle()
 {
@@ -288,6 +304,7 @@ int main()
         CheckGraceAtBegin();
         CheckFallbackCadence();
         CheckEndAndRestore();
+        CheckPausedBeforeSeek();
         CheckInputThrottle();
         CheckTypicalFlow();
         std::cout << "Playback seek tests passed\n";

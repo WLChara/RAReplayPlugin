@@ -23,13 +23,24 @@ struct ViewerRouterState
     bool mIsSeeking = false;
     /** 正在进行的快进的目标帧；只在 mIsSeeking 时有效，用来判断新目标是否更靠后。 */
     std::uint32_t mSeekTargetFrame = 0;
+    /** 回放会话处于暂停（结束不算暂停）。快进中会话为播放，此值为假。 */
+    bool mIsPaused = false;
+    /** 快进开始前保存的暂停状态（PlaybackSeek::WasPausedBeforeSeek）；只在 mIsSeeking 时有效。 */
+    bool mSeekWasPaused = false;
+    /** 进程内重开已请求、尚未执行。 */
+    bool mIsRestartPending = false;
+    /** 尚未执行的重开的目标帧（重新播放为空）；只在 mIsRestartPending 时有效。 */
+    std::optional<std::uint32_t> mPendingRestartTargetFrame;
 };
 
 enum class ViewerActionKind
 {
     SetPlaybackSpeed,
     SetPaused,
-    /** 请求启动器重新播放；只有请求成功时执行方才置退出标志并结束回放。 */
+    /**
+     * 重新播放：进程内重开的前提满足时记下重开请求（重开到开头并开始播放）；否则请求启动器重新播放，
+     * 只有请求成功时执行方才置退出标志并结束回放。
+     */
     RequestRestart,
     SetHalfShroud,
     ExitPlayback,
@@ -41,7 +52,13 @@ enum class ViewerActionKind
     ResetBattlefieldZoom,
     /** 向前跳转到 mSeekTargetFrame：不在快进中时开始快进，快进中改目标（mIsSeekRetarget）。 */
     SeekToFrame,
-    /** 结束正在进行的快进，停在当前位置。 */
+    /**
+     * 经进程内重开跳转到 mSeekTargetFrame（可为 0），到达后按 mIsPausedAfterSeek 暂停或继续：
+     * 向后跳转（目标在最后完成帧之前），以及重开已请求、尚未执行时的任何新目标（改写待执行的请求）。
+     * 前提不满足时执行方不执行。
+     */
+    SeekViaRestart,
+    /** 结束正在进行的快进，停在当前位置；进程内重开尚未执行时撤销该请求。 */
     CancelSeek
 };
 
@@ -72,10 +89,15 @@ struct ViewerAction
      * 为假时以战术区中心为锚点（HUD 按钮的 AdjustBattlefieldZoomAtCenter 命令）。
      */
     bool mIsZoomAnchoredAtPointer = false;
-    /** SeekToFrame：目标帧，已夹到最后一帧（总帧数 − 1），且大于最后完成帧；快进中还大于当前目标。 */
+    /**
+     * SeekToFrame：目标帧，已夹到最后一帧（总帧数 − 1），且大于最后完成帧；快进中还大于当前目标。
+     * SeekViaRestart：目标帧，已夹到最后一帧；不在待执行重开中时小于最后完成帧，在其中时与待执行的目标不同。
+     */
     std::uint32_t mSeekTargetFrame = 0;
     /** SeekToFrame：为真时改正在进行的快进的目标，为假时开始新的快进。 */
     bool mIsSeekRetarget = false;
+    /** SeekViaRestart：跳转前的暂停状态，快进中取快进开始前保存的状态，否则取当前会话是否暂停。 */
+    bool mIsPausedAfterSeek = false;
 };
 
 /**
@@ -85,10 +107,14 @@ struct ViewerAction
  * “已请求退出”之后：调速、暂停与界面缩放照常路由；重新播放、半黑幕、退出、镜头跳转、战局缩放（两种换档、复原）
  * 与两种跳转命令都被拦下，其中镜头跳转与战局缩放会移动镜头并创建或释放缩放资源。
  * 两种换档命令都路由为 AdjustBattlefieldZoom，只是锚点不同；档数为 0 的丢弃。
- * 跳转：总帧数未知或为 0 时拦下 SeekToFrame；负值丢弃，超过最后一帧的按最后一帧，不大于最后完成帧的丢弃；
- * 快进中只有比当前目标更靠后的目标路由为“改目标”，其余丢弃。CancelSeek 只在快进中有效。
- * 快进中再丢弃暂停、半黑幕、镜头跳转与战局缩放（两种换档、复原）；调速、界面缩放、退出与重新播放照常路由，
- * 退出与重新播放由执行方先结束快进。
+ * 跳转：总帧数未知或为 0 时拦下 SeekToFrame；负值丢弃，超过最后一帧的按最后一帧。之后：
+ * - 进程内重开已请求、尚未执行：与待执行目标相同的丢弃，其余一律路由为 SeekViaRestart（改写待执行的请求）；
+ * - 否则小于最后完成帧的路由为 SeekViaRestart（向后跳转，快进中同样如此），等于最后完成帧的丢弃；
+ * - 大于最后完成帧的向前跳转：快进中只有比当前目标更靠后的目标路由为“改目标”，其余丢弃。
+ * SeekViaRestart 的暂停状态：快进中取快进开始前保存的状态（mSeekWasPaused），否则取 mIsPaused。
+ * 路由不判定进程内重开的前提，由执行方判定。CancelSeek 只在快进中或重开已请求时有效。
+ * 快进中或重开已请求时再丢弃暂停、半黑幕、镜头跳转与战局缩放（两种换档、复原）；调速、界面缩放、退出与重新播放照常路由，
+ * 退出与重新播放由执行方先结束快进（退出还撤销待执行的重开）。
  */
 std::optional<ViewerAction> RouteViewerCommand(const viewer::ViewerCommand& command,
     const ViewerRouterState& state) noexcept;

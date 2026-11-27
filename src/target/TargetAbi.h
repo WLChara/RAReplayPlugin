@@ -235,6 +235,69 @@ constexpr std::uintptr_t TIMING_TIME_STAMP = 0xA8B1F8;
 // int：同一分支按 ⌊(帧号 + MaxAhead + FrameSendRate − 1) / FrameSendRate⌋ × FrameSendRate 写入（0x4C8072）。摘要只读。
 constexpr std::uintptr_t FRAME_SYNC_TARGET_FRAME = 0xA8B1DC;
 
+// ---- 进程内重开（同进程重新播放与向后跳转）----
+// 以下地址、宽度、调用约定与栈平衡都经 IDA 对照 gamemd.exe（基址 0x400000）的原字节与反编译核对。
+// 对象字段经 YRpp 成员读写，偏移在 game_api/native/NativeScenarioRestart.cpp 以 static_assert 核对。
+// SessionClass 全局实例（YRpp SessionClass::Instance 同址）；下列 SessionClass 成员函数的 ECX。
+constexpr std::uintptr_t SESSION_INSTANCE = 0xA8B238;
+// int 忙碌计数（Session+0x287C，YRpp 访问器 Suspended）：原生重开前 HNAC 在 0x55D080 加一（FF 05 B4 DA A8 00，inc dword），
+// 在 0x55D341 减一。为 0 时载入中的弹窗路径（UI_Updated、RunModalDialog）会重入 MainLoop。
+constexpr std::uintptr_t SESSION_BUSY_COUNT = 0xA8DAB4;
+static_assert(SESSION_BUSY_COUNT == SESSION_INSTANCE + 0x287C);
+// byte ScenarioStarted 与 WORLD_READY 是同一字节：RestartCurrentScenario 0x68642A 写 0（C6 05 5C ED A8 00 00），
+// StartScenario 成功结尾 0x683E75 写 1。
+constexpr std::uintptr_t SCENARIO_STARTED = WORLD_READY;
+// byte gGameActiveFlag（YRpp 名 TacticalActive）：0x686433 写 0（C6 05 78 E3 A8 00 00），StartScenario 结尾 0x683E7F 写 1。
+constexpr std::uintptr_t GAME_ACTIVE_FLAG = 0xA8E378;
+// byte g_GameActive（YRpp Game::IsActive 同址）：会话状态机 0x52D9D7 置 1（C6 05 A0 E9 A8 00 01）；HNAC 0x55D347 为 0 时结束会话；
+// CheckAndProcessNetworkAbort 0x69BABE 为 0 时不进入对局状态。插件请求退出（RequestReplayExit）也把它写 0。
+constexpr std::uintptr_t GAME_ACTIVE = 0xA8E9A0;
+// FinalizeSessionCleanupIfPending：char __thiscall(SessionClass*)，ECX=&Session，入口 mov al,[ecx+30D8h]（CurrentlyInGame
+// 为 0 时直接返回），无栈参数，0x69BBDC retn。
+constexpr std::uintptr_t FINALIZE_SESSION_CLEANUP = 0x69BB40;
+// DWORD SpecialRulesFlagsCache：SPECIAL 事件 0x4C6E59 整字写入（89 15 60 E9 A8 00），0x687C23 复制到 Scen->SpecialFlags。
+constexpr std::uintptr_t SPECIAL_RULES_FLAGS_CACHE = 0xA8E960;
+// Game::InitRandom：void __cdecl()，入口 sub esp,408h，不读寄存器参数，0x52FEBD retn；每次调用都经过插件的种子 Hook。
+constexpr std::uintptr_t INIT_RANDOM = 0x52FC20;
+// int ScenarioInit（YRpp Unsorted::ScenarioInit 同址）：开局前奏 0x48CDF0 整字写 0（89 1D AC E7 A8 00）。
+constexpr std::uintptr_t SCENARIO_INIT = 0xA8E7AC;
+// ScenarioClass::StartScenario：bool __fastcall(const char* fileName ECX, bool briefing DL, int campaignIndex [esp+4])，
+// 0x683D56 与 0x683EA0 两处 retn 4，AL=1 成功。0x683B38–0x683B4E 把 fileName 不限长复制到 Scen+0x125C，0x683B5D 对该副本
+// _strupr；之后读盘与 LoadScenarioWithProgressScreen 仍用传入的 fileName。fileName 为空且 campaignIndex 不为 −1 时改用战役表。
+constexpr std::uintptr_t START_SCENARIO = 0x683AB0;
+constexpr int START_SCENARIO_NO_CAMPAIGN = -1;
+// byte LightningStorm::TimeToEnd（YRpp 同址）：ClearScenario 经 0x53A090 在风暴进行中置 1（0x53A099：C6 05 D0 FA A9 00 01）。
+constexpr std::uintptr_t LIGHTNING_STORM_TIME_TO_END = 0xA9FAD0;
+// IPXManagerClass 全局实例（YRpp IPXManagerClass::Instance 同址）；下列三个连接函数的 ECX。
+constexpr std::uintptr_t IPX_MANAGER_INSTANCE = 0xA8E9C0;
+// Num_Connections：int __thiscall(IPXManagerClass*)，8B 41 44 C3（mov eax,[ecx+44h]; retn）。
+constexpr std::uintptr_t IPX_NUM_CONNECTIONS = 0x540F90;
+// 按槽位取连接 ID：int __thiscall(IPXManagerClass*, int slot)，0x540FB4 retn 4，越界返回 −1。
+constexpr std::uintptr_t IPX_CONNECTION_ID_AT = 0x540FA0;
+// Delete_Connection：bool __thiscall(IPXManagerClass*, int id)，0x540F85 retn 4，删除后 EAX=1；IPXStatus（+4）为 0 或 ID 不存在时
+// 返回 0、计数不变。原生 WOL 再战的删除循环（0x5C4BFC：每次删第 0 槽，直到计数为 0）没有失败出口，插件限定次数。
+constexpr std::uintptr_t IPX_DELETE_CONNECTION = 0x540F00;
+// 连接最多 8 个玩家减去本机。
+constexpr int MAX_IPX_CONNECTION_DELETES = 7;
+// SessionClass::CreateConnections：bool __thiscall(SessionClass*)，0x697E6D retn，EAX=1 成功；GameMode 不是 3 或 4、
+// 或出生点名字与房屋 UIName 不一致时返回 0。GameMode 为 4 时才走包路由分支，所以调用前先置 3。
+constexpr std::uintptr_t SESSION_CREATE_CONNECTIONS = 0x697B70;
+// int g_SpecialDialogState 与 OPTIONS_REQUEST 是同一字段：开局前奏 0x48CE6D 整字写 0（89 1D A0 ED A8 00）。
+constexpr std::uintptr_t SPECIAL_DIALOG_STATE = OPTIONS_REQUEST;
+// byte g_UserInputLockedSnapshot（YRpp 名 UserInputLocked）：前奏 0x48CE67 读 Scen+0x35A2，0x48CE73 写入（88 0D 9C ED A8 00）。
+constexpr std::uintptr_t USER_INPUT_LOCKED_SNAPSHOT = 0xA8ED9C;
+// byte：前奏 0x48CE7E 置 1（C6 05 FC 2C 82 00 01）；读写者只有 ShowSpecialDialog（0x48C8FD 等），语义未定，按原生照写。
+constexpr std::uintptr_t PRELUDE_BYTE_822CFC = 0x822CFC;
+// CheckAndProcessNetworkAbort（YRpp 名 SessionClass::Resume，实为进入对局状态）：char __thiscall(SessionClass*)，ECX=&Session，
+// 无栈参数；生效路径以 0x69BB3A 的 jmp 尾调 AudioRamp_SetTargetImmediate 返回，其余路径 0x69BB3F retn，都不清栈。
+// 只在 CurrentlyInGame 为 0 且 g_GameActive 不为 0 时生效；开局前奏在 0x48CE85 调用它。
+constexpr std::uintptr_t CHECK_AND_PROCESS_NETWORK_ABORT = 0x69BAB0;
+// MainLoop 退出谓词里与 EXIT_REQUEST 并列的三个字节：HNAC 0x55D059–0x55D074 逐个按字节测试，0x55D123–0x55D135 清零；
+// 0x8B41C0 是原生战役“重新开始”的请求。
+constexpr std::uintptr_t MAIN_LOOP_EXIT_GATE_A83D49 = 0xA83D49;
+constexpr std::uintptr_t MAIN_LOOP_EXIT_GATE_A8ECD0 = 0xA8ECD0;
+constexpr std::uintptr_t SCENARIO_RESTART_REQUESTED = 0x8B41C0;
+
 // ---- 回放战局缩放 ----
 // 以下 Hook 的原字节、相对位移、分支目标、寄存器与栈都经 IDA 对照原生指令逐一核对。
 // 被覆盖范围内都没有相对位移。只做寄存器代入的 Hook 返回下一条指令（*_CONTINUE），其余返回 0 由 Syringe 重放原指令。

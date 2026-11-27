@@ -18,7 +18,18 @@ void OnFrameBegin() noexcept;
  */
 enum class ViewerLoopAction { Continue, Hold, Exit, ContinueWithoutDraw };
 ViewerLoopAction OnViewerLoopGate() noexcept;
-bool OnAfterFrameLoop() noexcept;
+/**
+ * GAME_OVER_CALL（MainLoop 返回后、原生胜负处理调用处）的处理结果。
+ * NativeGameOver：调用原生胜负处理（没有请求、录制、尚未开始，或播放中）；SkipGameOver：不调用（暂停、回放结束、失败或已请求退出）；
+ * ScenarioRestarted：本次已在这里完成进程内重开，不调用原生胜负处理，Hook 还须复位观看输入范围
+ * （它属于 hooks，plugin 不能直接复位）。
+ */
+enum class AfterFrameLoopAction { NativeGameOver, SkipGameOver, ScenarioRestarted };
+/**
+ * 只在游戏线程、GAME_OVER_CALL 调用。先执行尚未执行的进程内重开请求（前提不再满足或准备失败时放弃，
+ * 重开开始拆除后的失败按播放失败处理并退出回放），再预取下一帧并更新观看呈现。不抛异常。
+ */
+AfterFrameLoopAction OnAfterFrameLoop() noexcept;
 bool ShouldUseHalfShroud() noexcept;
 /**
  * GScreenClass::GetInputAndUpdate 入口每次调用一次，只在游戏线程。快进中、且距上次完整执行不到 SEEK_INPUT_TICK_MS 时
@@ -62,11 +73,18 @@ void OnNativeEventDispatched(std::optional<std::uint32_t> ringIndex) noexcept;
 void OnNativeFrameParserReturned() noexcept;
 void OnFrameComplete() noexcept;
 bool OnPlaybackParser() noexcept;
+/**
+ * 开局载入的预世界等待点（StartScenario 内，每次载入一次）在判断是否绕过等待之前调用，只在游戏线程。
+ * 播放请求在本进程第一次载入时读取一次首次载入的会话快照（进程内重开要用它还原会话标量）；读取失败或是战役时
+ * 只记日志，进程内重开随之不可用。之后的载入（进程内重开）不覆盖快照，只再读一次与它比对并写一行技术日志。不抛异常。
+ */
+void OnScenarioPreworldWait() noexcept;
 bool ShouldBypassPeerProgressWait() noexcept;
 /**
  * DoBlit 整屏送屏后的 Sleep(50) 处每次调用一次，只在游戏线程。规则见 RuntimeGates 的同名判定：已接受的启动请求是播放、
  * 播放尚未开始且没有启动失败时返回 true，Hook 据此跳过这次等待。不调用 OnStartup：还没有已接受请求时（bootstrap 之前的
- * WinMain 阶段）直接返回 false，保持原生。每个进程第一次返回 true 时记一行技术日志。不抛异常。
+ * WinMain 阶段）直接返回 false，保持原生。进程内重开时运行时先回到“尚未开始”再载入，重开的载入期间同样跳过。
+ * 每个进程第一次返回 true 时记一行技术日志。不抛异常。
  */
 bool ShouldSkipLoadBlitSleep() noexcept;
 void OnSessionEnd() noexcept;

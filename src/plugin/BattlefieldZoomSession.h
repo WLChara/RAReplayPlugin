@@ -13,9 +13,17 @@ namespace rareplay::plugin
 class BattlefieldZoomSession final
 {
 public:
-    /** 回放开始时调用一次。 */
+    /** 回放开始时调用一次；请求档位为 1×。 */
     void Begin() noexcept;
-    /** 回放结束、失败或意外异常时调用；录制或未 Begin 时也可调用，此时没有副作用。 */
+    /**
+     * 进程内重开后再次开始：与 Begin 相同地启用，然后请求恢复上次 Stop 前观看者请求的档位
+     * （以战术区中心为锚点，在下一次绘制时应用，范围按新的物理战术区夹取）。从未 Stop 过时同 Begin。
+     */
+    void BeginWithPreviousZoom() noexcept;
+    /**
+     * 回放结束、失败、意外异常或进程内重开前调用；录制或未 Begin 时也可调用，此时没有副作用。
+     * 停用前记下观看者请求的档位，供 BeginWithPreviousZoom 恢复。
+     */
     void Stop() noexcept;
     /** 每个主循环迭代调用：把适配器积累的日志写入插件日志。 */
     void Update() noexcept;
@@ -35,5 +43,7 @@ private:
     void FlushLog() noexcept;
 
     bool mIsActive = false;
+    // 最近一次 Stop 前观看者请求的档位（rareplay::zoom::ZOOM_LEVELS 的下标）。
+    int mRequestedIndexAtStop = rareplay::zoom::IDENTITY_ZOOM_INDEX;
 };
 }

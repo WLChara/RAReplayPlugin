@@ -24,6 +24,8 @@ public:
     bool Append(const replay::RecordedInputEffect& effect, std::string& outError);
     bool Drain(std::uint32_t frameNumber,
         std::vector<replay::RecordedInputEffect>& outEffects, std::string& outError);
+    /** 进程内重开时回到构造后的状态：丢弃未取走的记录，忘掉上一场的帧号。 */
+    void Reset() noexcept;
     static MovementFeedbackCaptureResult TryBuildMovementFeedback(const void* animationType,
         const void* coordinates, std::int32_t loopDelay, std::int32_t loopCount,
         std::uint32_t flags, std::int32_t forceZAdjust, std::uint32_t reverse,

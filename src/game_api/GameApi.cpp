@@ -2,6 +2,7 @@
 
 #include "capture/DispatchedEvents.h"
 #include "native/NativeGame.h"
+#include "native/NativeScenarioRestart.h"
 #include "native/NativeShroud.h"
 #include "native/NativeControlGroups.h"
 #include "../replay/FrameCodec.h"
@@ -465,4 +466,27 @@ native::SeekBacklogCleanupResult GameApi::CleanSeekBacklog(const native::SeekBac
     return native::CleanSeekBacklog(cleanup);
 }
 void GameApi::RegisterViewerShroudFullRedraw() noexcept { native::RegisterViewerShroudFullRedraw(); }
+
+std::optional<native::ScenarioSessionSnapshot> GameApi::ReadScenarioSessionSnapshot() const noexcept
+{
+    return native::ReadScenarioSessionSnapshot();
+}
+
+bool GameApi::CheckScenarioRestartReady(const native::ScenarioSessionSnapshot& snapshot,
+    std::string& outReason) const noexcept
+{
+    return native::CheckScenarioRestartReady(snapshot, outReason);
+}
+
+bool GameApi::RestartScenarioInProcess(const native::ScenarioSessionSnapshot& snapshot,
+    native::ScenarioRestartReport& outReport) noexcept
+{
+    // 重开后的第 0 帧由下一次 BeginFrame 重新建立本帧上下文；上一场的帧号与未取走的输入效果不得带过去。
+    mPlayerInputEffects.Reset();
+    mPlayerInputEffectsError.clear();
+    mActiveFrame = 0;
+    mIsFrameActive = false;
+    mHasNativeChecksum = false;
+    return native::RestartScenarioInProcess(snapshot, outReport);
+}
 }

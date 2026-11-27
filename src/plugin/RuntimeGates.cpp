@@ -52,6 +52,12 @@ bool CanSeekPlayback(const RuntimeGateState& state) noexcept
         (state.mReplayState == replay::ReplayState::Playing || state.mReplayState == replay::ReplayState::Paused);
 }
 
+bool CanRestartInProcess(const RuntimeGateState& state) noexcept
+{
+    return state.mCanRestartFromSnapshot && state.mIsStarted && state.mIsPlayback && state.mIsPlaybackSourceOpen &&
+        !state.mHasStartFailed && !state.mHasExitRequested && IsViewableState(state.mReplayState);
+}
+
 bool ShouldRunBeforeSimulation(const RuntimeGateState& state) noexcept
 {
     return IsPlaybackPlaying(state) || IsRecordingActive(state);

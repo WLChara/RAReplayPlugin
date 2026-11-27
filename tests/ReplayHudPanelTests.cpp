@@ -1818,6 +1818,59 @@ void CheckSeekBarModel()
             "before the position it is still a backward seek");
     model = BuildSeekBarModel(MakeSeekSnapshot(1600, 900, SeekScenario::ReadOnly));
     Require(BuildSeekBarTooltip(model, timeline.get(), 1'000) == "00:33（帧 1000）", "a read-only bar gives no reason");
+
+    // 可以向后跳转：当前位置之前的帧可点并说明需要重新载入，当前位置本身仍不可点（不再说明）；向前照旧。
+    snapshot = MakeSeekSnapshot(1600, 900, SeekScenario::Seekable);
+    snapshot.mPlaybackControls.mCanSeekBackward = true;
+    model = BuildSeekBarModel(snapshot);
+    Require(model.mMode == SeekBarMode::Interactive && model.mCanSeekBackward && model.mCanSeekForward,
+            "a snapshot that can go back is interactive in both directions");
+    Require(CanSeekToFrame(model, 0) && CanSeekToFrame(model, SEEK_CURRENT_FRAME - 1) &&
+                !CanSeekToFrame(model, SEEK_CURRENT_FRAME) && CanSeekToFrame(model, SEEK_CURRENT_FRAME + 1),
+            "frames before the position are targets, the position itself is not");
+    Require(BuildSeekBarTooltip(model, timeline.get(), 1'000) == std::string("00:33（帧 1000）\n") + SEEK_RELOAD_TOOLTIP,
+            "a backward target says it needs a reload");
+    Require(BuildSeekBarTooltip(model, timeline.get(), SEEK_CURRENT_FRAME) ==
+                FormatSeekPointLabel(timeline.get(), SEEK_CURRENT_FRAME),
+            "the position itself gives no reason when going back is possible");
+    Require(BuildSeekBarTooltip(model, timeline.get(), 4'000) == "02:12（帧 4000）", "a forward target still needs no reason");
+
+    // 回放结束：不能向前，只能向后，进度条仍可交互。
+    auto ended = snapshot;
+    ended.mPlaybackControls.mStatus = rareplay::viewer::PlaybackStatus::Ended;
+    ended.mPlaybackControls.mCanSeek = false;
+    model = BuildSeekBarModel(ended);
+    Require(model.mMode == SeekBarMode::Interactive && CanSeekToFrame(model, 1'000) &&
+                !CanSeekToFrame(model, SEEK_CURRENT_FRAME + 1),
+            "an ended replay can only go back");
+    Require(BuildSeekBarTooltip(model, timeline.get(), 4'000) == "02:12（帧 4000）", "frames after the end give no reason");
+    ended.mPlaybackControls.mCanSeekBackward = false;
+    Require(BuildSeekBarModel(ended).mMode == SeekBarMode::ReadOnly, "without going back an ended replay stays read-only");
+
+    // 快进中：当前位置之前可点（向后），当前位置到目标之间仍不可点。
+    auto seekingBack = MakeSeekSnapshot(1600, 900, SeekScenario::Seeking);
+    seekingBack.mPlaybackControls.mCanSeekBackward = true;
+    model = BuildSeekBarModel(seekingBack);
+    Require(CanSeekToFrame(model, 1'000) && !CanSeekToFrame(model, SEEK_CURRENT_FRAME) && !CanSeekToFrame(model, 5'000) &&
+                CanSeekToFrame(model, SEEK_TARGET_FRAME + 1),
+            "while seeking, frames before the position go back and frames after the target retarget");
+    Require(BuildSeekBarTooltip(model, timeline.get(), 1'000).ends_with(SEEK_RELOAD_TOOLTIP) &&
+                BuildSeekBarTooltip(model, timeline.get(), 5'000).ends_with(SEEK_BEFORE_TARGET_TOOLTIP),
+            "while seeking the tooltips tell the reload from the blocked range");
+
+    // 重开已请求、尚未执行：进度按 0，除待执行的目标外任何位置都可改作重开后的目标。
+    auto reloading = seekingBack;
+    reloading.mPlaybackControls.mSeek = {true, 0, 1'000, true};
+    model = BuildSeekBarModel(reloading);
+    Require(model.mIsSeeking && model.mIsReloading && model.mSeekPercent == 0 &&
+                model.mSeekStatus == "正在跳转到 00:33 … 0%",
+            "a pending restart shows 0%: " + model.mSeekStatus);
+    Require(!CanSeekToFrame(model, 1'000) && CanSeekToFrame(model, 0) && CanSeekToFrame(model, 5'000) &&
+                CanSeekToFrame(model, SEEK_CURRENT_FRAME) && CanSeekToFrame(model, SEEK_TOTAL_FRAMES - 1),
+            "a pending restart can be retargeted anywhere but its own target");
+    Require(BuildSeekBarTooltip(model, timeline.get(), 5'000).ends_with(SEEK_RELOAD_TOOLTIP) &&
+                BuildSeekBarTooltip(model, timeline.get(), 1'000) == FormatSeekPointLabel(timeline.get(), 1'000),
+            "a pending restart explains the reload except at its own target");
     ++g_SeekBarChecks;
 }
 
@@ -2034,6 +2087,50 @@ void CheckSeekingLabel(const ReplayHud& hud, const std::string& name, bool isSee
             name + ": the label is visible but does not take input");
 }
 
+// 可以向后跳转：点在当前位置之前提交一次跳转（由游戏线程按向后跳转处理）；“重新播放”不再要求启动器支持。
+void CheckBackwardSeekBar(HeadlessImGui& imgui)
+{
+    using rareplay::viewer::ViewerCommandKind;
+    imgui.SetScalePercent(100);
+    const GameImagePlacement image{{0.0f, 0.0f, 1600.0f, 900.0f}, true};
+    const UiRect footer{0.0f, 794.0f, 1432.0f, 900.0f};
+    auto& exchange = imgui.GetExchange();
+    auto snapshot = MakeSeekSnapshot(1600, 900, SeekScenario::Seekable);
+    snapshot.mPlaybackControls.mCanSeekBackward = true;
+    ReplayHud hud;
+    imgui.Draw(hud, snapshot, 1600.0f, 900.0f, image);
+    const FirstRowButtons buttons = MeasureFirstRowButtons(footer);
+    const UiRect bar = *hud.GetSeekBarRects().mBar;
+    const float y = CenterY(bar);
+    exchange.Drain();
+
+    const float backX = GetBarX(bar, 1'000);
+    ClickPointer(hud, imgui, snapshot, 1600.0f, 900.0f, image, backX, y);
+    auto commands = exchange.Drain();
+    Require(commands.size() == 1 && commands[0].mKind == ViewerCommandKind::SeekToFrame &&
+                commands[0].mValue == static_cast<int>(GetFrameAtX(bar, backX)) &&
+                commands[0].mValue < static_cast<int>(SEEK_CURRENT_FRAME),
+            "a click before the position submits one backward seek");
+    ClickPointer(hud, imgui, snapshot, 1600.0f, 900.0f, image, GetBarX(bar, 0), y);
+    commands = exchange.Drain();
+    Require(commands.size() == 1 && commands[0].mValue == 0, "the left end seeks back to frame 0");
+
+    // 启动器不支持重新播放，但进程内重开可用：按钮可用；两者都不可用时按钮禁用。
+    snapshot.mPlaybackControls.mCanRestart = false;
+    imgui.Draw(hud, snapshot, 1600.0f, 900.0f, image);
+    ClickPointer(hud, imgui, snapshot, 1600.0f, 900.0f, image, CenterX(buttons.mRestart), CenterY(buttons.mRestart));
+    commands = exchange.Drain();
+    Require(commands.size() == 1 && commands[0].mKind == ViewerCommandKind::RestartPlayback,
+            "restart works in process without launcher support");
+    snapshot.mPlaybackControls.mCanSeekBackward = false;
+    imgui.Draw(hud, snapshot, 1600.0f, 900.0f, image);
+    ClickPointer(hud, imgui, snapshot, 1600.0f, 900.0f, image, CenterX(buttons.mRestart), CenterY(buttons.mRestart));
+    ClickPointer(hud, imgui, snapshot, 1600.0f, 900.0f, image, backX, y);
+    Require(exchange.Drain().empty(), "without either path restart and going back are disabled");
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    ++g_SeekBarChecks;
+}
+
 // 快进中：状态文字与“取消”；暂停、速度、半黑幕与缩放禁用；退出与重新播放可用；进度条只接受目标之后的位置。
 void CheckSeekingFooter(HeadlessImGui& imgui)
 {
@@ -2235,6 +2332,7 @@ int main()
         CheckSeekBarModel();
         CheckSeekBarInteraction(imgui);
         CheckSeekBarReadOnly(imgui);
+        CheckBackwardSeekBar(imgui);
         CheckSeekingFooter(imgui);
         CheckSeekBarLayouts(imgui);
         std::cout << "Replay HUD panel tests passed (statistics pages: " << g_StatsPageChecks

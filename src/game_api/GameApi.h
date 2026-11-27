@@ -6,7 +6,12 @@
 #include "capture/DispatchEventCapture.h"
 #include "capture/EventCaptureDiagnostics.h"
 #include "control_groups/ControlGroupRecorder.h"
+#include "native/NativeScenarioRestart.h"
 #include "native/NativeSeekBacklog.h"
+#include "native/ScenarioSessionSnapshot.h"
+
+#include <optional>
+#include <string>
 
 
 namespace rareplay::game_api
@@ -77,6 +82,17 @@ public:
     native::SeekBacklogCleanupResult CleanSeekBacklog(const native::SeekBacklogCleanup& cleanup) noexcept;
     /** 半黑幕开启时，在快进后的完整重绘前登记整视口脏矩形；不清显示副本。 */
     void RegisterViewerShroudFullRedraw() noexcept;
+    // 进程内重开（同进程重新播放与向后跳转），语义见 native/NativeScenarioRestart.h 的同名函数。
+    /** 只在开局载入的预世界等待点调用；读取失败时为空。 */
+    std::optional<native::ScenarioSessionSnapshot> ReadScenarioSessionSnapshot() const noexcept;
+    /** 开始拆除之前的只读检查；不满足时写 outReason。 */
+    bool CheckScenarioRestartReady(const native::ScenarioSessionSnapshot& snapshot, std::string& outReason) const noexcept;
+    /**
+     * 先复位本对象的逐帧状态（本帧上下文与玩家输入效果缓冲），再执行原生重开序列。观看调速属于观看设置，跨重开沿用；
+     * 录制专用的采集状态不动（只有播放会重开）。失败时世界可能已半拆，调用方必须按播放失败处理并退出回放。
+     */
+    bool RestartScenarioInProcess(const native::ScenarioSessionSnapshot& snapshot,
+        native::ScenarioRestartReport& outReport) noexcept;
 
 private:
     /**

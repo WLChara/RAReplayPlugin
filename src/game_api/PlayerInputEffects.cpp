@@ -65,6 +65,13 @@ bool PlayerInputEffects::Drain(std::uint32_t frameNumber,
     return true;
 }
 
+void PlayerInputEffects::Reset() noexcept
+{
+    mEffects.clear();
+    mFrameNumber = 0;
+    mHasFrame = false;
+}
+
 MovementFeedbackCaptureResult PlayerInputEffects::TryBuildMovementFeedback(
     const void* animationType, const void* coordinates, std::int32_t loopDelay,
     std::int32_t loopCount, std::uint32_t flags, std::int32_t forceZAdjust,
